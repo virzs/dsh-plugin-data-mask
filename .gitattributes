@@ -1,0 +1,4 @@
+# Keep the repository byte-stable across platforms: the generated
+# client-engine.js is compared byte-for-byte by the test suite.
+* text=auto eol=lf
+*.svg text
