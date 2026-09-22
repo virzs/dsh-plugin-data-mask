@@ -1,0 +1,4 @@
+{
+  "title": "Data Mask",
+  "description": "Replaces phone numbers, national IDs, bank cards, emails, API keys and other sensitive values the moment you paste into the composer. Masking style and custom rules are configurable."
+}

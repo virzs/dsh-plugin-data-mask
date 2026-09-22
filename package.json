@@ -1,0 +1,55 @@
+{
+  "name": "@local/dsh-plugin-data-mask",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Paste-time data masking for the DeepSeek Harness Web composer: sensitive values are replaced before they ever reach the input box.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "cordis",
+    "plugin",
+    "data-masking",
+    "redaction",
+    "privacy"
+  ],
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./client-engine": "./client-engine.js",
+    "./engine": "./engine.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "client-engine.js",
+    "engine.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build-client-engine.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "meta": {
+    "title": "数据脱敏 (Data Mask)",
+    "description": "粘贴到对话框时自动替换手机号、身份证号、银行卡号、邮箱、密钥等敏感信息，替换规则与方式可在设置中自定义。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+- insert:
+    - id: data-mask
+      name: '@local/dsh-plugin-data-mask'
