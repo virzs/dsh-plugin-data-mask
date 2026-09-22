@@ -17,7 +17,6 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
-    "./client-engine": "./client-engine.js",
     "./engine": "./engine.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
@@ -25,7 +24,6 @@
   "files": [
     "index.js",
     "client.js",
-    "client-engine.js",
     "engine.js",
     "cordis.patch.yml",
     "icon.svg",
@@ -33,8 +31,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/build-client-engine.mjs",
-    "test": "node --test test/*.test.mjs"
+    "build": "node scripts/build-client.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check:web": "node scripts/check-web-boot.mjs"
   },
   "meta": {
     "title": "数据脱敏 (Data Mask)",

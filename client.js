@@ -15,17 +15,453 @@
  * 3. A chip that opens the settings panel: master switch, mask style, per-rule
  *    toggles, custom-rule editor, and a live preview.
  *
+ * Failure containment is deliberate. This bundle runs at web boot, and the boot
+ * gate refuses to start the GUI when an entry does not reach `active`, so:
+ * `inject` names only `slots`, every `ctx` call is wrapped, the UI is feature
+ * detected, and React children are wrapped in an error boundary. The worst case
+ * is a missing chip — never a blocked page.
+ *
+ * The masking engine below is generated from `engine.js` by
+ * `scripts/build-client.mjs` and inlined on purpose: the browser module table
+ * cannot resolve a package subpath, and a failed `require` here rejects the
+ * whole import, which fails the boot gate.
+ *
  * The original text of a masked paste is kept in memory only, is dropped after
- * {@link RECORD_TTL_MS}, and is never written to storage or sent anywhere.
+ * 10 minutes, and is never written to storage or sent anywhere.
  */
 window.__ModuleLoader__.load({
   id: '@local/dsh-plugin-data-mask',
   factory(require) {
     const React = require('react');
-    const ReactDOM = require('react-dom');
     const h = React.createElement;
-    const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React;
-    const { sanitize, parseCustomRules, RULES, MODES } = require('@local/dsh-plugin-data-mask/engine');
+    const {
+      useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
+    } = React;
+
+    // #region generated engine (scripts/build-client.mjs)
+    const MODES = ['label', 'partial', 'redact'];
+
+    const FALLBACK = '***';
+
+    function keep(raw, head, tail, width = 4) {
+      const size = raw.length;
+      const h = Math.max(0, Math.min(head, size));
+      const t = Math.max(0, Math.min(tail, Math.max(0, size - h)));
+      const lead = raw.slice(0, h);
+      const trail = t > 0 ? raw.slice(size - t) : '';
+      return `${lead}${'*'.repeat(width)}${trail}`;
+    }
+
+    function digitsOf(raw) {
+      return raw.replace(/\D+/g, '');
+    }
+
+    function luhn(raw) {
+      const digits = digitsOf(raw);
+      if (digits.length < 12 || digits.length > 19) return false;
+      if (/^(\d)\1+$/.test(digits)) return false;
+      let sum = 0;
+      let double = false;
+      for (let i = digits.length - 1; i >= 0; i -= 1) {
+        let value = digits.charCodeAt(i) - 48;
+        if (double) {
+          value *= 2;
+          if (value > 9) value -= 9;
+        }
+        sum += value;
+        double = !double;
+      }
+      return sum % 10 === 0;
+    }
+
+    function validNationalId(raw) {
+      const value = raw.trim().toUpperCase();
+      if (/^\d{15}$/.test(value)) {
+        return plausibleDate(value.slice(6, 12));
+      }
+      if (!/^\d{17}[\dX]$/.test(value)) return false;
+      if (!plausibleDate(value.slice(6, 14))) return false;
+      const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+      const checks = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
+      let sum = 0;
+      for (let i = 0; i < 17; i += 1) sum += (value.charCodeAt(i) - 48) * weights[i];
+      return checks[sum % 11] === value[17];
+    }
+
+    function plausibleDate(value) {
+      let year;
+      let month;
+      let day;
+      if (value.length === 8) {
+        year = Number(value.slice(0, 4));
+        month = Number(value.slice(4, 6));
+        day = Number(value.slice(6, 8));
+      } else if (value.length === 6) {
+        year = 1900 + Number(value.slice(0, 2));
+        month = Number(value.slice(2, 4));
+        day = Number(value.slice(4, 6));
+      } else {
+        return false;
+      }
+      if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+      return year >= 1900 && year <= 2100;
+    }
+
+    function validChinaPhone(raw) {
+      const digits = digitsOf(raw);
+      if (digits.length === 11) return /^1[3-9]\d{9}$/.test(digits);
+      if (digits.length >= 10 && digits.length <= 12) return /^0\d{9,11}$/.test(digits);
+      return false;
+    }
+
+    function looksLikeJwt(raw) {
+      const [header] = raw.split('.');
+      if (header === undefined) return false;
+      try {
+        const normalized = header.replace(/-/g, '+').replace(/_/g, '/');
+        const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+        const decoded = atob(padded);
+        // The prefix regex already saw `eyJ`; a real header must decode to JSON.
+        return decoded.startsWith('{') && (decoded.includes('alg') || decoded.includes('typ'));
+      } catch {
+        return false;
+      }
+    }
+
+    function privateIpv4(raw) {
+      const parts = raw.split('.').map(Number);
+      if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+      const [a, b] = parts;
+      if (a === 10 || a === 127) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 169 && b === 254) return true;
+      return false;
+    }
+
+    function isIpv6(raw) {
+      // The compressed loopback forms double as source-code spellings (`::1`, `::`).
+      if (raw === '::1' || raw === '::') return false;
+      if (!/^[0-9A-Fa-f:]+$/.test(raw)) return false;
+      if (/^[0-9A-Fa-f]{1,2}(:[0-9A-Fa-f]{1,2}){5}$/.test(raw)) return false; // that is a MAC address
+      const [head, tail, ...rest] = raw.split('::');
+      if (rest.length > 0 || head === undefined) return false;
+      const groups = (part) => (part === '' || part === undefined ? [] : part.split(':'));
+      const parse = (part) => {
+        const list = groups(part);
+        return list.every((group) => /^[0-9A-Fa-f]{1,4}$/.test(group)) ? list : null;
+      };
+      const left = parse(head);
+      const right = tail === undefined ? [] : parse(tail);
+      if (left === null || right === null) return false;
+      if (tail === undefined) return left.length === 8;
+      const filled = left.length + right.length;
+      if (filled >= 8) return false;
+      return filled > 0 || tail !== '';
+    }
+
+    function connectionTarget(raw) {
+      const uri = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
+      if (uri !== null) return `[${uri[1]} 连接串]`;
+      const assignment = /^([A-Za-z_][A-Za-z0-9_-]*)\s*[=:]/i.exec(raw);
+      return assignment === null ? '[连接串]' : `${assignment[1]} --> [连接串]`;
+    }
+
+    const RULES = [
+      {
+        id: 'pem',
+        label: '证书/私钥',
+        hint: 'PEM 私钥或证书块',
+        order: 10,
+        enabled: true,
+        find: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+      },
+      {
+        id: 'jwt',
+        label: 'JWT 令牌',
+        hint: '三段式 JSON Web Token',
+        order: 20,
+        enabled: true,
+        find: /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}/g,
+        validate: looksLikeJwt,
+      },
+      {
+        id: 'connection',
+        label: '数据库连接串',
+        hint: '含账号密码的连接 URI，或 password=/api_key= 赋值',
+        // Ahead of the API-key rule on purpose: `key=sk-…` is an assignment, and the
+        // assignment form explains the removal better than a bare key label does.
+        order: 25,
+        enabled: true,
+        // The whole URI goes, host and database name included; only the scheme is
+        // echoed back by `maskWith`. `\w*` prefixes are deliberate: that is what
+        // lets `api_key=`, `dbPassword=` and a bare `key=` share one alternative.
+        find: /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]*:[^\s"'`<>]*@[^\s"'`<>]+|\b\w*(?:pass(word|wd)?|pwd|key|token)\s*[=:]\s*["']?[^\s"',;]{6,}["']?/gi,
+        maskWith: connectionTarget,
+      },
+      {
+        id: 'secret',
+        label: 'API 密钥',
+        hint: 'sk-/ghp_/AKIA 等常见密钥前缀',
+        order: 30,
+        enabled: true,
+        find: /\b(?:sk|rk|pk|api)[-_][A-Za-z0-9_-]{16,}\b|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}\b|\bAKIA[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+      },
+      {
+        id: 'bearer',
+        label: 'Authorization 头',
+        hint: 'Bearer / Basic 凭据',
+        order: 40,
+        enabled: true,
+        find: /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+      },
+      {
+        id: 'bankcard',
+        label: '银行卡号',
+        hint: '13-19 位数字，需通过 Luhn 校验',
+        order: 60,
+        enabled: true,
+        find: /(?<![\d-])(?:\d{4}[ -]){3}\d{4}(?:[ -]\d{1,3})?(?![\d-])|(?<!\d)\d{13,19}(?!\d)/g,
+        validate: (raw) => luhn(raw),
+      },
+      {
+        id: 'nationalid',
+        label: '身份证号',
+        hint: '18 位（含校验位）或 15 位中国身份证',
+        order: 70,
+        enabled: true,
+        find: /(?<![\dXx])\d{17}[\dXx](?![\dXx])|(?<!\d)\d{15}(?!\d)/g,
+        validate: validNationalId,
+      },
+      {
+        id: 'email',
+        label: '邮箱地址',
+        hint: '常见邮箱写法',
+        order: 80,
+        enabled: true,
+        find: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g,
+      },
+      {
+        id: 'phone',
+        label: '手机号/固话',
+        hint: '11 位手机号，或带区号的固话',
+        order: 90,
+        enabled: true,
+        find: /(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)|(?<!\d)0\d{2,3}[-\s]\d{7,8}(?!\d)/g,
+        validate: validChinaPhone,
+      },
+      {
+        id: 'mac',
+        label: 'MAC 地址',
+        hint: '冒号或短横线分隔的物理地址',
+        order: 100,
+        enabled: true,
+        find: /(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])/g,
+      },
+      {
+        id: 'ipv4',
+        label: '内网 IP 地址',
+        hint: '10./192.168./172.16-31. 等私有网段',
+        order: 110,
+        enabled: true,
+        find: /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g,
+        validate: privateIpv4,
+      },
+      {
+        id: 'ipv6',
+        label: 'IPv6 地址',
+        hint: '真实 IPv6 地址，含 :: 压缩写法',
+        order: 120,
+        enabled: true,
+        // A candidate is any run of hex digits and colons that contains at least one
+        // colon and one hex digit; `isIpv6` then decides whether it really is one.
+        find: /(?<![0-9A-Za-z:])(?=[0-9A-Fa-f:]*:)[0-9A-Fa-f:]*[0-9A-Fa-f][0-9A-Fa-f:]*(?![0-9A-Za-z:])/g,
+        validate: isIpv6,
+      },
+      {
+        id: 'qq',
+        label: 'QQ 号',
+        hint: '“QQ: 12345678” 这类带前缀的号码',
+        order: 130,
+        enabled: false,
+        find: /(?<=\bQQ[：:\s]{1,3})\d{5,11}\b/gi,
+      },
+    ];
+
+    const OVERRIDABLE = ['enabled', 'mode', 'mask'];
+
+    function defaultRules() {
+      return RULES.map((rule) => ({ ...rule }));
+    }
+
+    function compileRule(source) {
+      if (source.find instanceof RegExp) return source.find.global ? source : { ...source, find: new RegExp(source.find.source, `${source.find.flags}g`) };
+      if (typeof source.find !== 'string') return null;
+      const literal = /^\/(.+)\/([a-z]*)$/s.exec(source.find);
+      try {
+        if (literal) return { ...source, find: new RegExp(literal[1], literal[2].includes('g') ? literal[2] : `${literal[2]}g`) };
+        return { ...source, find: new RegExp(source.find, 'g') };
+      } catch {
+        return null;
+      }
+    }
+
+    function sanitize(text, options = {}) {
+      const input = typeof text === 'string' ? text : '';
+      const enabled = options.enabled !== false;
+      const mode = MODES.includes(options.mode) ? options.mode : 'label';
+      if (!enabled || input === '') return { text: input, hits: [], total: 0 };
+
+      const overrides = options.ruleOverrides ?? {};
+      const table = [...defaultRules()];
+
+      for (const custom of options.customRules ?? []) {
+        if (custom?.enabled === false) continue;
+        const compiled = compileRule({ ...custom, order: 999 });
+        if (compiled !== null) table.push({ ...compiled, builtin: false });
+      }
+
+      // `claimed[i]` marks a character already owned by a higher-priority rule.
+      const claimed = new Array(input.length).fill(false);
+      const spans = [];
+      const hits = [];
+
+      const ordered = table
+        .map((rule) => {
+          const override = overrides[rule.id] ?? {};
+          const merged = { ...rule };
+          for (const field of OVERRIDABLE) if (override[field] !== undefined) merged[field] = override[field];
+          return merged;
+        })
+        .sort((left, right) => (left.order ?? 500) - (right.order ?? 500));
+
+      for (const rule of ordered) {
+        if (rule.enabled === false) continue;
+        const pattern = compileRule(rule);
+        if (pattern === null) continue;
+        const find = pattern.find;
+        find.lastIndex = 0;
+        let match = find.exec(input);
+        let count = 0;
+        while (match !== null) {
+          const value = match[0];
+          const start = match.index;
+          const end = start + value.length;
+          if (value.length > 0 && !claimed.slice(start, end).includes(true) && (rule.validate === undefined || rule.validate(value) === true)) {
+            for (let i = start; i < end; i += 1) claimed[i] = true;
+            spans.push({ start, end, rule, value });
+            count += 1;
+          }
+          if (find.lastIndex <= start) find.lastIndex = start + 1;
+          match = find.exec(input);
+        }
+        if (count > 0) hits.push({ id: rule.id, label: rule.label, count });
+      }
+
+      spans.sort((left, right) => left.start - right.start);
+      let output = '';
+      let cursor = 0;
+      for (const span of spans) {
+        output += input.slice(cursor, span.start);
+        // The global mode is the default; a rule override (`merged.mode`) outranks it.
+        output += replacementFor(span.rule, span.value, span.rule.mode ?? mode);
+        cursor = span.end;
+      }
+      output += input.slice(cursor);
+
+      const total = hits.reduce((sum, hit) => sum + hit.count, 0);
+      return { text: output, hits, total };
+    }
+
+    function replacementFor(rule, value, strategy) {
+      if (typeof rule.maskWith === 'function') return rule.maskWith(value);
+      if (typeof rule.mask === 'string' && rule.mask !== '') {
+        return rule.mask.replace(/\{value\}/g, value);
+      }
+      if (strategy === 'redact') return '*'.repeat(Math.max(3, Math.min(value.length, 12)));
+      if (strategy === 'partial') return partialFor(rule.id, value);
+      return `[${rule.label}]`;
+    }
+
+    function partialFor(id, value) {
+      switch (id) {
+        case 'phone':
+        case 'qq':
+          return keep(value, 3, 4);
+        case 'nationalid':
+          return keep(value, 6, 4);
+        case 'bankcard':
+          return keep(value, 4, 4);
+        case 'email': {
+          const at = value.lastIndexOf('@');
+          if (at <= 0) return FALLBACK;
+          const local = value.slice(0, at);
+          const head = local.slice(0, Math.min(2, local.length));
+          return `${head}***${value.slice(at)}`;
+        }
+        case 'secret':
+        case 'jwt':
+        case 'bearer':
+          return keep(value, 4, 4);
+        case 'ipv4':
+        case 'ipv6':
+          return keep(value, 4, 3);
+        case 'mac':
+          return keep(value, 5, 2);
+        default:
+          return FALLBACK;
+      }
+    }
+
+    function parseCustomRules(text) {
+      const rules = [];
+      const bad = [];
+      const lines = String(text ?? '').split(/\r?\n/);
+      lines.forEach((line, index) => {
+        const trimmed = line.trim();
+        if (trimmed === '' || trimmed.startsWith('#')) return;
+        const arrow = trimmed.indexOf('=>');
+        const body = (arrow === -1 ? trimmed : trimmed.slice(0, arrow)).trim();
+        const replacement = arrow === -1 ? '' : trimmed.slice(arrow + 2).trim();
+        const literal = /^\/(.+)\/([a-z]*)$/s.exec(body);
+        const source = literal ? literal[1] : body;
+        const flags = literal ? literal[2] : '';
+        let find;
+        try {
+          find = new RegExp(source, flags.includes('g') ? flags : `${flags}g`);
+        } catch (error) {
+          bad.push({ line: index + 1, text: trimmed, reason: String(error?.message ?? error) });
+          return;
+        }
+        rules.push({
+          id: `custom-${index + 1}`,
+          label: '自定义',
+          hint: trimmed,
+          order: 900,
+          enabled: true,
+          builtin: false,
+          mode: 'label',
+          find,
+          mask: replacement === '' ? '[自定义]' : replacement,
+        });
+      });
+      return { rules, bad };
+    }
+
+    function formatCustomRules(rules) {
+      return (rules ?? [])
+        .map((rule) => {
+          const find = rule.find instanceof RegExp ? rule.find : compileRule(rule)?.find;
+          if (!(find instanceof RegExp)) return '';
+          const flags = find.flags.replace('g', '');
+          const body = `/${find.source}/${flags}`;
+          const mask = typeof rule.mask === 'string' ? rule.mask : '';
+          return mask === '' || mask === '[自定义]' ? body : `${body} => ${mask}`;
+        })
+        .filter((line) => line !== '')
+        .join('\n');
+    }
+    // #endregion generated engine
 
     /** localStorage key holding the persisted configuration. */
     const STORAGE_KEY = 'dsh.data-mask.settings.v1';
@@ -73,6 +509,7 @@ window.__ModuleLoader__.load({
         'notice.undoHint': '把原文放回输入框（仅当草稿未被改动且仍在 10 分钟内可用）',
         'notice.undone': '已撤销，原文已放回输入框',
         'notice.failed': '无法撤销：草稿已被修改，或输入框不可编辑',
+        'notice.diverged': '草稿已被修改，撤销已停用（原文仍在剪贴板）',
         'notice.notApplied': '未能写入输入框，可手动粘贴下面的脱敏文本',
         'notice.copy': '复制脱敏文本',
         'notice.copied': '已复制脱敏文本',
@@ -110,6 +547,7 @@ window.__ModuleLoader__.load({
         'notice.undoHint': 'Puts the original back into the composer (only while the draft is untouched and within 10 minutes)',
         'notice.undone': 'Undone — the original is back in the composer',
         'notice.failed': 'Cannot undo: the draft changed, or the editor is not editable',
+        'notice.diverged': 'The draft changed, so undo is off (the original is still on your clipboard)',
         'notice.notApplied': 'The composer did not accept it — copy the masked text instead',
         'notice.copy': 'Copy masked text',
         'notice.copied': 'Masked text copied',
@@ -119,6 +557,33 @@ window.__ModuleLoader__.load({
     };
 
     const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: 'label', rules: {}, custom: '' });
+
+    /**
+     * Dictionary lookup that does not depend on the locale service.
+     *
+     * The locale service is read opportunistically in `apply`; this fallback
+     * keeps every visible string working (and localized) even when that service
+     * is absent or its registration failed, so the feature never disappears.
+     * @param key - dictionary key.
+     * @param params - `{name}` placeholders to substitute.
+     */
+    function t(key, params) {
+      const dictionary = activeDictionary();
+      const template = dictionary[key] ?? DICTIONARIES.zh[key] ?? key;
+      if (params === undefined) return template;
+      return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
+    }
+
+    /** @returns the dictionary for the language the shell is showing. */
+    function activeDictionary() {
+      try {
+        const stored = window.localStorage.getItem('dsh.locale') ?? window.localStorage.getItem('dsh.locale.v1') ?? '';
+        if (/^en\b/i.test(stored)) return DICTIONARIES.en;
+      } catch {
+        // Storage is optional; Chinese is the primary language for this plugin.
+      }
+      return DICTIONARIES.zh;
+    }
 
     // #region settings store
 
@@ -236,6 +701,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Marks a `ClipboardEvent` this plugin dispatched itself, so the interceptor
+     * can tell its own writes from a real paste. The masked re-issue and the undo
+     * both set it; without it, the undo would be masked straight back.
+     */
+    const OWN_WRITE = Symbol.for('dsh.data-mask.own-write');
+
+    /**
+     * Dispatch one paste carrying `text` at `target`, marked as this plugin's own
+     * write so the interceptor ignores it.
+     * @param target - the editable element to paste into.
+     * @param text - the text to deliver.
+     * @returns whether the event reached a listener without throwing.
+     */
+    function dispatchPaste(target, text) {
+      try {
+        const data = new DataTransfer();
+        data.setData('text/plain', text);
+        const event = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: data,
+        });
+        event[OWN_WRITE] = true;
+        target.dispatchEvent(event);
+        return true;
+      } catch {
+        // A browser that refuses a synthetic ClipboardEvent reports false; the
+        // caller then falls back to the notice's copy button.
+        return false;
+      }
+    }
+
+    /**
      * Install the capture-phase paste listener.
      *
      * Capture on `window` is what makes this work: the listener runs before the
@@ -249,6 +747,9 @@ window.__ModuleLoader__.load({
         const settings = store.getSettings();
         if (!settings.enabled) return;
         if (!(event instanceof ClipboardEvent) || event.clipboardData === null) return;
+        // This plugin's own writes (the masked re-issue and the undo) carry a
+        // marker; masking them again would fight the undo path.
+        if (event[OWN_WRITE] === true) return;
         if (!isEditablePaste(event)) return;
 
         const original = event.clipboardData.getData('text/plain');
@@ -261,21 +762,15 @@ window.__ModuleLoader__.load({
         event.stopImmediatePropagation();
 
         const target = event.target;
-        let applied = false;
-        try {
-          const data = new DataTransfer();
-          data.setData('text/plain', result.text);
-          const forwarded = new ClipboardEvent('paste', {
-            bubbles: true,
-            cancelable: true,
-            clipboardData: data,
-          });
-          applied = target === null || target.dispatchEvent(forwarded);
-        } catch {
-          // A browser that refuses a synthetic ClipboardEvent still gets the
-          // notice below; the composer simply keeps its own copy of the text.
-          applied = false;
-        }
+        const editorBefore = target instanceof Element ? target.closest(EDITABLE_SELECTOR) : null;
+        const textBefore = editorBefore === null ? null : editorText(editorBefore);
+
+        // NOTE: neither `dispatchEvent`'s return value nor the editor's text is
+        // usable here. The composer always prevents the paste default (so the
+        // return value is always false), and Lexical applies the insertion
+        // *after* this handler returns. Whether the text landed is therefore
+        // decided later, by the deferred probe below.
+        dispatchPaste(target, result.text);
 
         store.setRecord({
           at: Date.now(),
@@ -283,10 +778,13 @@ window.__ModuleLoader__.load({
           draft: result.text,
           hits: result.hits,
           total: result.total,
-          editor: target instanceof Element ? target.closest(EDITABLE_SELECTOR) : null,
-          applied,
+          editor: editorBefore,
+          applied: null,
+          draftState: 'unknown',
           undone: false,
         });
+        pendingProbe = { record: store.getRecord(), before: textBefore };
+        scheduleProbe();
       };
 
       window.addEventListener('paste', onPaste, true);
@@ -306,10 +804,71 @@ window.__ModuleLoader__.load({
       return null;
     }
 
+    /** The record whose paste success is still being measured, if any. */
+    let pendingProbe = null;
+
     /** @returns the comparable draft text of a contenteditable / textarea / input. */
     function editorText(element) {
       if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) return element.value;
       return (element.textContent ?? '').replace(ZERO_WIDTH, '');
+    }
+
+    /**
+     * Whether an element still accepts text.
+     *
+     * The `contenteditable` attribute is checked directly instead of
+     * `HTMLElement.isEditable`: the property is absent in some engines, which
+     * would make every undo look impossible.
+     *
+     * @param element - the editable element.
+     */
+    function isContentEditable(element) {
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+        return !element.disabled && !element.readOnly;
+      }
+      const value = element.getAttribute('contenteditable');
+      return value === '' || value === 'true' || value === 'plaintext-only';
+    }
+
+    /**
+     * How a record's masked draft relates to what the composer holds now.
+     * @param record - the masked-paste record.
+     * @returns `'none'` without an editor, `'masked'` when the draft is untouched,
+     * `'original'` after an undo, `'diverged'` when the user edited it since.
+     */
+    function probeDraft(record) {
+      const editor = liveEditor(record);
+      if (editor === null) return 'none';
+      const current = editorText(editor);
+      if (current === record.draft) return 'masked';
+      if (current === record.original) return 'original';
+      return 'diverged';
+    }
+
+    /**
+     * Decide, a tick after a paste or an undo, what the composer actually holds.
+     *
+     * The composer applies both writes asynchronously and `dispatchEvent` gives
+     * no usable verdict, so the verdict is measured afterwards — and a record
+     * whose text never arrived is marked `applied: false` rather than claiming
+     * an undo that cannot work.
+     *
+     * @param delay - how long to let the composer settle before measuring.
+     */
+    function scheduleProbe(delay = 400) {
+      window.setTimeout(() => {
+        const pending = pendingProbe;
+        pendingProbe = null;
+        if (pending === null) return;
+        const record = store.getRecord();
+        if (record !== pending.record) return;
+        const draftState = probeDraft(record);
+        store.setRecord({
+          ...record,
+          draftState,
+          applied: record.applied === null ? draftState !== 'none' : record.applied,
+        });
+      }, delay);
     }
 
     /**
@@ -319,23 +878,26 @@ window.__ModuleLoader__.load({
      * masked text that was inserted — so a chip or an edit the user made since is
      * never clobbered, and the undo is refused instead.
      *
+     * The write reuses the composer's own paste path (the same one the masked
+     * insertion uses) rather than `document.execCommand('insertText')`, which is
+     * deprecated and does not reliably reach a Lexical editor.
+     *
      * @param record - the masked paste to undo.
-     * @returns whether the original reached the editor.
+     * @returns whether the write was dispatched; the notice re-checks what landed.
      */
     function restoreOriginal(record) {
       const editor = liveEditor(record);
       if (editor === null) return false;
       if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
         if (editor.disabled || editor.readOnly) return false;
-      } else if (editor.isEditable !== true) {
+      } else if (!isContentEditable(editor)) {
         return false;
       }
-      const current = editorText(editor);
-      if (current !== record.draft) return false;
+      if (editorText(editor) !== record.draft) return false;
       try {
         editor.focus({ preventScroll: true });
         if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-          editor.setSelectionRange(0, current.length);
+          editor.setSelectionRange(0, record.draft.length);
         } else {
           const range = document.createRange();
           range.selectNodeContents(editor);
@@ -343,13 +905,18 @@ window.__ModuleLoader__.load({
           if (selection === null) return false;
           selection.removeAllRanges();
           selection.addRange(range);
+          // The editor keeps its own selection model and learns about a DOM
+          // range through `selectionchange`; without this the composer pastes at
+          // its own caret (appending) instead of over the masked draft.
+          document.dispatchEvent(new Event('selectionchange'));
         }
-        // `insertText` leaves no `paste` event behind, so the interceptor cannot
-        // re-mask the text we are deliberately restoring.
-        return document.execCommand('insertText', false, record.original);
       } catch {
         return false;
       }
+      const dispatched = dispatchPaste(editor, record.original);
+      pendingProbe = { record: store.getRecord(), before: record.draft };
+      scheduleProbe();
+      return dispatched;
     }
 
     // #endregion
@@ -362,6 +929,13 @@ window.__ModuleLoader__.load({
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   width: 100%; min-width: 0;
 }
+.dsh-data-mask-overlay {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  z-index: 40; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  width: min(680px, calc(100vw - 32px)); pointer-events: none;
+}
+.dsh-data-mask-overlay:empty { display: none; }
+.dsh-data-mask-overlay > * { pointer-events: auto; max-width: 100%; }
 .dsh-data-mask-chip {
   display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
   border: 1px solid transparent; border-radius: 999px; padding: 1px 8px;
@@ -378,7 +952,6 @@ window.__ModuleLoader__.load({
   background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 11.5px;
 }
 .dsh-data-mask-notice[data-tone="warn"] { border-color: var(--dsw-alias-state-warn-primary); }
-.dsh-data-mask-notice[data-tone="done"] { color: var(--dsw-alias-label-secondary); }
 .dsh-data-mask-notice-preview {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--dsw-alias-label-secondary);
@@ -390,12 +963,13 @@ window.__ModuleLoader__.load({
   background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
   padding: 1px 8px; font-size: 11.5px; line-height: 1.7;
 }
-.dsh-data-mask-notice button:hover:not(:disabled) { border-color: var(--dsw-alias-border-l2); }
-.dsh-data-mask-notice button:disabled { opacity: 0.5; cursor: not-allowed; }
+.dsh-data-mask-notice button:hover { border-color: var(--dsw-alias-border-l2); }
 .dsh-data-mask-notice small { color: var(--dsw-alias-label-secondary); }
 .dsh-data-mask-notice-spacer { flex: 1 1 auto; }
+.dsh-data-mask-anchor { position: relative; display: inline-flex; align-items: center; }
 .dsh-data-mask-panel {
-  position: fixed; z-index: 40; box-sizing: border-box;
+  position: absolute; z-index: 40; box-sizing: border-box;
+  bottom: calc(100% + 8px); left: 0;
   display: flex; flex-direction: column; gap: 12px; padding: 14px;
   border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px;
   background: var(--dsw-alias-bg-overlay); box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
@@ -442,33 +1016,58 @@ window.__ModuleLoader__.load({
 .dsh-data-mask-hits { color: var(--dsw-alias-state-success-primary); }
 .dsh-data-mask-empty { color: var(--dsw-alias-label-secondary); }
 .dsh-data-mask-bad { color: var(--dsw-alias-state-error-primary); }
-.dsh-data-mask-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--dsw-alias-label-secondary); }
-.dsh-data-mask-foot button {
-  border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; cursor: pointer;
-  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
-  padding: 3px 9px; font-size: 12px;
-}
+.dsh-data-mask-foot { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); }
 `;
 
     /**
      * The plugin's stylesheet, inserted once and removed with the plugin.
+     * Never throws: a stylesheet failure must not reach the boot gate.
      * @returns the cleanup that takes it out again.
      */
     function installStyles() {
-      const existing = document.getElementById(STYLE_ID);
-      if (existing !== null) return () => {};
-      const element = document.createElement('style');
-      element.id = STYLE_ID;
-      element.textContent = STYLE_TEXT;
-      document.head.append(element);
-      return () => {
-        element.remove();
-      };
+      try {
+        if (document.getElementById(STYLE_ID) !== null) return () => {};
+        const element = document.createElement('style');
+        element.id = STYLE_ID;
+        element.textContent = STYLE_TEXT;
+        document.head.append(element);
+        return () => {
+          element.remove();
+        };
+      } catch (error) {
+        console.warn('[data-mask] stylesheet could not be installed:', error);
+        return () => {};
+      }
     }
 
     // #endregion
 
     // #region components
+
+    /**
+     * Swallow a render error from one subtree.
+     *
+     * A plugin that only decorates the composer must not be able to take the
+     * conversation down with it, so every contribution is wrapped here.
+     */
+    class Boundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error) {
+        console.warn('[data-mask] component failed:', error);
+      }
+
+      render() {
+        return this.state.error === null ? this.props.children : null;
+      }
+    }
 
     /**
      * The settings panel.
@@ -477,9 +1076,8 @@ window.__ModuleLoader__.load({
      * @param props.record - the current masked-paste record, when there is one.
      * @param props.onChange - applies a settings patch.
      * @param props.onClose - closes the panel.
-     * @param props.t - locale translator for the data-mask namespace.
      */
-    function MaskPanel({ settings, record, onChange, onClose, t }) {
+    function MaskPanel({ settings, record, onChange, onClose }) {
       const [sample, setSample] = useState('张三 13812345678 zhangsan@example.com 卡号 4111111111111111');
       const parsed = useMemo(() => parseCustomRules(settings.custom), [settings.custom]);
       const preview = useMemo(
@@ -618,9 +1216,8 @@ window.__ModuleLoader__.load({
      * @param props.record - the masked-paste record.
      * @param props.onUndone - marks the record as undone.
      * @param props.onDismiss - drops the record.
-     * @param props.t - locale translator for the data-mask namespace.
      */
-    function MaskNotice({ record, onUndone, onDismiss, t }) {
+    function MaskNotice({ record, onUndone, onDismiss }) {
       const [revealed, setRevealed] = useState(false);
       const [failure, setFailure] = useState(false);
       const [copied, setCopied] = useState(false);
@@ -632,9 +1229,10 @@ window.__ModuleLoader__.load({
         return () => window.clearInterval(timer);
       }, [record.undone]);
 
-      const preview = record.total > 0
-        ? record.hits.map((hit) => `${hit.label}×${hit.count}`).join('、')
-        : '';
+      const preview = record.hits.map((hit) => `${hit.label}×${hit.count}`).join('、');
+      // `applied === null` means the paste verdict has not settled yet.
+      const unwritten = record.applied === false;
+      const diverged = record.draftState === 'diverged' && !unwritten;
 
       const undo = () => {
         if (restoreOriginal(record)) {
@@ -647,15 +1245,19 @@ window.__ModuleLoader__.load({
 
       /** Fallback path when the composer refused the re-issued paste. */
       const copyMasked = () => {
-        navigator.clipboard?.writeText(record.draft).then(
-          () => setCopied(true),
-          () => setCopied(false),
-        );
+        try {
+          navigator.clipboard?.writeText(record.draft).then(
+            () => setCopied(true),
+            () => setCopied(false),
+          );
+        } catch {
+          setCopied(false);
+        }
       };
 
       return h(
         'div',
-        { className: 'dsh-data-mask-notice', 'data-tone': failure || !record.applied ? 'warn' : 'info' },
+        { className: 'dsh-data-mask-notice', 'data-tone': failure || unwritten || diverged ? 'warn' : 'info' },
         h(
           'span',
           { className: 'dsh-data-mask-notice-preview', 'data-revealed': revealed ? 'true' : 'false' },
@@ -689,13 +1291,18 @@ window.__ModuleLoader__.load({
               },
               t('notice.view'),
             ),
-            record.applied
-              ? h('button', { type: 'button', title: t('notice.undoHint'), onClick: undo }, t('notice.undo'))
-              : h('button', { type: 'button', onClick: copyMasked }, copied ? t('notice.copied') : t('notice.copy')),
+            unwritten
+              ? h('button', { type: 'button', onClick: copyMasked }, copied ? t('notice.copied') : t('notice.copy'))
+              : h(
+                'button',
+                { type: 'button', title: t('notice.undoHint'), onClick: undo },
+                t('notice.undo'),
+              ),
           ),
         failure ? h('small', null, t('notice.failed')) : null,
-        !record.applied && !record.undone ? h('small', null, t('notice.notApplied')) : null,
-        record.applied && !record.undone
+        unwritten && !record.undone ? h('small', null, t('notice.notApplied')) : null,
+        diverged && !record.undone ? h('small', null, t('notice.diverged')) : null,
+        !unwritten && !diverged && !record.undone
           ? h('small', null, t('notice.autoHide', { minutes: Math.max(1, Math.ceil(expiresIn / 60000)) }))
           : null,
         h('span', { className: 'dsh-data-mask-notice-spacer' }),
@@ -704,127 +1311,201 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The dock entry: the chip, the notice, and the anchored settings panel.
-     * @param props - dock entry props.
-     * @param props.t - locale translator for the data-mask namespace.
+     * One rendered surface of the plugin.
+     *
+     * `conversation.composer.dock` is session-scoped and `shell.overlay` is
+     * root-scoped, so both are registered: the dock carries the status chip
+     * beside the composer, and the overlay keeps the masked-paste notice — and
+     * therefore 按住查看原文 / 撤销 — available on the start screen too, where no
+     * Session (and so no dock) exists yet.
+     *
+     * @param props - surface props.
+     * @param props.surface - `'dock'` renders chip + notice, `'overlay'` the notice only.
      */
-    function MaskDock({ t }) {
+    function MaskSurface({ surface }) {
       const settings = useSyncExternalStore(store.subscribe, store.getSettings, store.getSettings);
       const record = useSyncExternalStore(store.subscribe, store.getRecord, store.getRecord);
-      const [placement, setPlacement] = useState(null);
-      const chipRef = useRef(null);
+      const [panelOpen, setPanelOpen] = useState(false);
+      const anchorRef = useRef(null);
 
-      const close = useCallback(() => setPlacement(null), []);
+      const close = useCallback(() => setPanelOpen(false), []);
 
+      // Expire the undo window even while the user never touches the panel.
       useEffect(() => {
-        const timer = window.setInterval(() => store.sweep(), 30000);
+        const timer = window.setInterval(() => store.sweep(), 15000);
         return () => window.clearInterval(timer);
       }, []);
 
-      const place = useCallback(() => {
-        const element = chipRef.current;
-        if (element === null) return null;
-        const rect = element.getBoundingClientRect();
-        return {
-          left: Math.max(PANEL_GAP, Math.min(rect.right - PANEL_WIDTH, window.innerWidth - PANEL_WIDTH - PANEL_GAP)),
-          bottom: Math.max(PANEL_GAP, window.innerHeight - rect.top + PANEL_GAP),
-        };
-      }, []);
-
       useEffect(() => {
-        if (placement === null) return undefined;
-        const reposition = () => setPlacement((current) => (current === null ? current : place()));
+        if (!panelOpen) return undefined;
         const onKeyDown = (event) => {
           if (event.key === 'Escape') close();
         };
         const onPointerDown = (event) => {
-          if (chipRef.current !== null && !chipRef.current.contains(event.target) && event.target.closest('.dsh-data-mask-panel') === null) close();
+          if (anchorRef.current !== null && !anchorRef.current.contains(event.target)) close();
         };
-        window.addEventListener('resize', reposition);
-        window.addEventListener('scroll', reposition, true);
         document.addEventListener('keydown', onKeyDown);
         document.addEventListener('pointerdown', onPointerDown, true);
         return () => {
-          window.removeEventListener('resize', reposition);
-          window.removeEventListener('scroll', reposition, true);
           document.removeEventListener('keydown', onKeyDown);
           document.removeEventListener('pointerdown', onPointerDown, true);
         };
-      }, [placement !== null, close, place]);
+      }, [panelOpen, close]);
 
-      const openPanel = () => setPlacement(placement === null ? place() : null);
+      const dock = surface === 'dock';
       const masked = record?.total ?? 0;
       const state = !settings.enabled ? 'off' : masked > 0 ? 'hot' : 'idle';
       const label = !settings.enabled
         ? t('chip.off')
         : masked > 0 ? t('chip.last', { count: masked }) : t('chip.on');
 
-      return h(
-        React.Fragment,
-        null,
+      const chip = h(
+        'div',
+        { className: 'dsh-data-mask-anchor', ref: anchorRef },
         h(
-          'div',
-          { className: 'dsh-data-mask-dock' },
-          record === null
-            ? null
-            : h(MaskNotice, {
-              record,
-              onUndone: () => store.setRecord({ ...record, undone: true }),
-              onDismiss: () => store.setRecord(null),
-              t,
-            }),
-          h(
-            'button',
-            {
-              type: 'button',
-              ref: chipRef,
-              className: 'dsh-data-mask-chip',
-              'data-state': state,
-              title: t('panel.title'),
-              onClick: openPanel,
-            },
-            h('span', { className: 'dsh-data-mask-dot', 'aria-hidden': true }),
-            label,
-          ),
+          'button',
+          {
+            type: 'button',
+            className: 'dsh-data-mask-chip',
+            'data-state': state,
+            title: t('panel.title'),
+            onClick: () => setPanelOpen((open) => !open),
+          },
+          h('span', { className: 'dsh-data-mask-dot', 'aria-hidden': true }),
+          label,
         ),
-        placement === null
-          ? null
-          : ReactDOM.createPortal(
-            h(
-              'div',
-              { style: { position: 'fixed', left: placement.left, bottom: placement.bottom } },
-              h(MaskPanel, {
-                settings,
-                record,
-                onChange: store.update,
-                onClose: close,
-                t,
-              }),
-            ),
-            document.body,
-          ),
+        panelOpen
+          ? h(Boundary, null, h(MaskPanel, {
+            settings,
+            record,
+            onChange: store.update,
+            onClose: close,
+          }))
+          : null,
       );
+
+      const notice = record === null
+        ? null
+        : h(Boundary, null, h(MaskNotice, {
+          record,
+          onUndone: () => store.setRecord({ ...record, undone: true }),
+          onDismiss: () => store.setRecord(null),
+        }));
+
+      // Without a Session the dock slot is absent, so the overlay draws the chip
+      // itself and parks itself just under the composer card.
+      if (!dock) {
+        return h(
+          'div',
+          { className: 'dsh-data-mask-overlay', ref: anchorRef, style: overlayOffset(record !== null) },
+          chip,
+          notice,
+        );
+      }
+
+      return h(
+        'div',
+        { className: 'dsh-data-mask-dock' },
+        notice,
+        chip,
+      );
+    }
+
+    /** The composer-dock surface: status chip plus the masked-paste notice. */
+    function MaskDockEntry() {
+      return h(MaskSurface, { surface: 'dock' });
+    }
+
+    /** The root-scoped surface: chip plus notice, for screens without a dock. */
+    function MaskOverlayEntry() {
+      return h(MaskSurface, { surface: 'overlay' });
+    }
+
+    /**
+     * Park the overlay just below the composer card, so the notice and the chip
+     * sit where the session-scoped dock would be. Falls back to a fixed offset
+     * while no composer is on screen, and re-measures on every render.
+     * @param withNotice - whether the notice row is present, which sets the gap.
+     * @returns inline positioning, or an empty object when nothing was measured.
+     */
+    function overlayOffset(withNotice) {
+      try {
+        const composer = document.querySelector('[data-composer-input]')
+          ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
+        if (composer === null) return { bottom: '18px' };
+        const rect = composer.getBoundingClientRect();
+        const bottom = Math.max(12, window.innerHeight - rect.bottom + 10);
+        return { bottom: `${String(Math.round(bottom + (withNotice ? 34 : 0)))}px` };
+      } catch {
+        return { bottom: '18px' };
+      }
     }
 
     // #endregion
 
     return {
-      inject: ['slots', 'locale'],
+      // Only `slots` is required. `locale` is consumed opportunistically in
+      // `apply`, because a required-but-missing service parks the fiber and the
+      // boot gate then refuses to start the GUI.
+      inject: ['slots'],
       /**
        * Client plugin body: styles, dictionaries, the paste interceptor, and the
-       * composer-dock entry.
+       * composer-dock entry. Every step is isolated so a failure degrades the
+       * feature instead of failing activation.
        * @param ctx - Client cordis context.
        */
       apply(ctx) {
-        ctx.effect(() => installStyles(), 'data-mask: stylesheet');
-        ctx.effect(() => ctx.locale.register(NS, DICTIONARIES), 'data-mask: dictionaries');
-        ctx.effect(() => attachPasteInterceptor(), 'data-mask: paste interceptor');
-        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-          name: 'conversation.composer.dock',
-          id: 'data-mask',
-          order: 20,
-          locale: NS,
-        }, MaskDock));
+        let styles = () => {};
+        try {
+          styles = installStyles();
+        } catch (error) {
+          console.warn('[data-mask] stylesheet step failed:', error);
+        }
+        try {
+          ctx.effect(styles, 'data-mask: stylesheet');
+        } catch (error) {
+          console.warn('[data-mask] stylesheet effect failed:', error);
+        }
+
+        // A required service that is missing parks the fiber, which fails the
+        // boot gate, so the locale service is read through `ctx.get`: the same
+        // service with no requirement, costing nothing when it is absent.
+        try {
+          const locale = ctx.get('locale');
+          if (locale?.register !== undefined) {
+            ctx.effect(() => locale.register(NS, DICTIONARIES), 'data-mask: dictionaries');
+          }
+        } catch (error) {
+          console.warn('[data-mask] locale registration unavailable, using the built-in dictionaries:', error);
+        }
+
+        try {
+          ctx.effect(() => attachPasteInterceptor(), 'data-mask: paste interceptor');
+        } catch (error) {
+          console.warn('[data-mask] paste interceptor could not be installed:', error);
+        }
+
+        try {
+          ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+            name: 'conversation.composer.dock',
+            id: 'data-mask',
+            order: 20,
+          }, MaskDockEntry));
+        } catch (error) {
+          console.warn('[data-mask] composer dock entry could not be registered:', error);
+        }
+
+        // Root-scoped fallback surface: the dock above is session-scoped, so the
+        // masked-paste notice would be invisible on the start screen.
+        try {
+          ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+            name: 'shell.overlay',
+            id: 'data-mask-notice',
+            order: 40,
+          }, MaskOverlayEntry));
+        } catch (error) {
+          console.warn('[data-mask] overlay entry could not be registered:', error);
+        }
       },
     };
   },

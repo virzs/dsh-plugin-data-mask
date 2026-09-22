@@ -59,26 +59,48 @@
 # 安装（插件管理器会把它登记到 profile 的 dsh.profile.bundles）
 # 在 Harness 里：plugin_manager install_bundle  target = 本目录绝对路径
 
-# 依赖：无。运行测试：
+# 依赖：无。运行测试（含产物同步、清单一致性与“不阻塞启动”约束）：
 npm test
 
-# 修改 engine.js 后重新生成浏览器产物（tests 会检查两者是否同步）
+# 修改 engine.js 后把引擎重新内联进 client.js（tests 会检查两者是否同步）
 npm run build
+
+# 在真实浏览器里验证（需要一个运行中的实例 URL，含 token）
+node scripts/check-web-boot.mjs "http://127.0.0.1:3080/?token=..."
+node scripts/check-web-e2e.mjs  "http://127.0.0.1:3080/?token=..."
 ```
 
 目录结构：
 
 ```
 engine.js              规则、校验器、脱敏引擎（唯一事实来源，纯 ESM，可独立复用）
-client.js              浏览器半边：粘贴拦截、提示条、设置面板
-client-engine.js       由 scripts/build-client-engine.mjs 生成的模块表产物（勿手改）
+client.js              浏览器半边：内联引擎 + 粘贴拦截 + 提示条 + 设置面板
 index.js               Host 半边（本插件功能全在浏览器端，仅保留 bundle 入口）
 cordis.patch.yml       bundle 补丁：插入 data-mask 行
-test/                  node:test 用例（引擎行为 + 产物同步 + 清单一致性）
+scripts/build-client.mjs      把 engine.js 内联进 client.js 的生成脚本
+scripts/repro-client.mjs      在 Node 里模拟浏览器模块表，复现客户端的加载错误
+scripts/check-web-boot.mjs    无头 Chrome：抓取真实控制台输出，确认启动门通过
+scripts/check-web-e2e.mjs     无头 Chrome：验证粘贴脱敏、按住查看、撤销、设置面板
+test/                  node:test 用例（引擎行为 + 产物同步 + 清单一致性 + 启动安全约束）
 ```
+
+## 两个必须记住的工程约束
+
+这两条都是踩过坑后固化的，测试会强制守护：
+
+1. **`client.js` 不能 `require` 本包的子路径。** 浏览器模块表只解析包自身的 id 和
+   `/client` 子路径；`@local/dsh-plugin-data-mask/engine` 这类子路径解析失败会让
+   bundle 的 import 直接 reject，而客户端插件的 import 失败会触发 **Web 启动门**，
+   整个 GUI 停在 “Failed to load plugins” —— 用户连界面都进不去。所以引擎是
+   `npm run build` 内联进 `client.js` 的，`test/package.test.mjs` 会断言
+   `require()` 只允许 `react`。
+2. **`inject` 只声明 `slots`，`locale` 用 `ctx.get('locale')` 读取。** 声明了却缺失的
+   服务会让 fiber 停在 pending，同样触发启动门。`apply()` 内每一步都包了 try/catch，
+   UI 渲染包了 error boundary：任何一步失败只降级功能，不会阻塞页面。
 
 开发提示：插件以 junction 链接方式安装在 `C:\Users\virs9\.dsh\profiles\web\node_modules\@local\dsh-plugin-data-mask`，直接指向本目录，改动即时生效（客户端代码刷新页面后加载）。
 
 ## 界面语言
 
-面板文案跟随 Harness 的语言设置（内置 `zh` / `en` 词典，通过 Client locale 服务注册）。
+面板文案跟随 Harness 的语言设置（内置 `zh` / `en` 词典，通过 Client locale 服务注册；该服务不可用时自动回退到内置词典）。
+
