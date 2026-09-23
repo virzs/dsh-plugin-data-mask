@@ -875,9 +875,8 @@ window.__ModuleLoader__.load({
           hits: result.hits,
           total: result.total,
           editor: editorBefore,
-          // Structural identity of this composer, so the notice can follow the
-          // conversation back when the editor node is re-mounted.
-          fingerprint: editorBefore === null ? null : composerFingerprint(editorBefore),
+          // Whose conversation this is: the sidebar's selected row at paste time.
+          sessionKey: currentSessionKey(),
           applied: null,
           swapped: false,
           draftState: 'unknown',
@@ -908,25 +907,21 @@ window.__ModuleLoader__.load({
     let pendingProbe = null;
 
     /**
-     * A structural fingerprint of the composer an editor belongs to.
+     * The Session the sidebar currently has selected.
      *
-     * The shell exposes no session id in the DOM, so ownership is judged by the
-     * composer's own structure: the class names of the field and its nearest
-     * composer ancestors. Switching conversations re-mounts the composer with a
-     * DIFFERENT structure, while a re-render of the same conversation keeps the
-     * same one — so the notice can follow the conversation back.
+     * Switching conversations reuses the composer node — the composer's whole
+     * ancestor chain is byte-identical before and after a switch (verified) — so
+     * the DOM carries NO conversation identity at the composer. The sidebar's
+     * selected row is the one authoritative signal, read from its `data-row-key`.
      *
-     * @param element - the editable field.
-     * @returns the fingerprint, or null when it cannot be read.
+     * @returns `session:<id>` for a selected row, or null when none is selected
+     * (the start screen, or a brand-new Session that has no row yet).
      */
-    function composerFingerprint(element) {
+    function currentSessionKey() {
       try {
-        const names = [element.className];
-        for (let node = element.parentElement; node !== null && node !== document.body; node = node.parentElement) {
-          names.push(node.className);
-          if (node.hasAttribute('data-composer-card')) break;
-        }
-        return names.join('>');
+        const row = document.querySelector('[data-row-key^="session:"][class*="selected"]')
+          ?? document.querySelector('[data-row-key^="session:"][aria-selected="true"]');
+        return row === null ? null : row.getAttribute('data-row-key');
       } catch {
         return null;
       }
@@ -935,30 +930,19 @@ window.__ModuleLoader__.load({
     /**
      * Whether the notice still belongs to the conversation on screen.
      *
-     * The recorded editor can be unmounted by a re-render of the SAME
-     * conversation, so a missing node is not by itself proof that the user left:
-     * the current composer's fingerprint decides. A composer whose fingerprint
-     * matches means the notice belongs here (and comes back when the user
-     * returns); one that does not means another conversation is on screen.
+     * Identity, not connectivity: the composer outlives a conversation switch, so
+     * "the node is still mounted" proves nothing — that was the defect, and the
+     * notice followed the user into other conversations. A record made on the
+     * start screen carries no key and stays visible until a Session is selected.
      *
      * @param record - the masked-paste record.
      * @returns whether the notice should be shown.
      */
     function recordBelongsToView(record) {
-      const recorded = record?.editor;
-      if (!(recorded instanceof HTMLElement)) return true;
-      if (recorded.isConnected) return true;
-      const fingerprint = record.fingerprint;
-      if (typeof fingerprint !== 'string' || fingerprint === '') return false;
-      try {
-        const fields = document.querySelectorAll('[data-composer-input]');
-        for (const field of fields) {
-          if (composerFingerprint(field) === fingerprint) return true;
-        }
-      } catch {
-        return false;
-      }
-      return false;
+      const now = currentSessionKey();
+      const owner = record?.sessionKey ?? null;
+      if (owner === null) return now === null;
+      return now === owner;
     }
 
     /**
@@ -1609,26 +1593,38 @@ window.__ModuleLoader__.load({
        * Report the held state to the surface, which owns the composer write.
        * @param next - whether the composer should show the original.
        */
+      const heldRef = useRef(false);
       const setRevealed = (next) => {
+        // Idempotent by construction: several release paths may report the same
+        // end (button and document both see a pointerup over the button), and a
+        // second restore is what used to APPEND the text instead of replacing it.
+        if (heldRef.current === next) return;
+        heldRef.current = next;
         onReveal(next);
       };
 
-      // The reveal is ended by exactly ONE path: a document-level release
-      // listener. The button deliberately carries no release handler of its own —
-      // with both, a single pointerup ran the restore twice, and the second pass
-      // appended the text instead of replacing it.
+      // A hold must never stick, and it must never be cut short. So the release is
+      // listened for in BOTH places — the document (release anywhere, including
+      // off the button) and the button itself (a mouse released over it) — and
+      // `setRevealed` above absorbs the duplicate. There is deliberately no timer
+      // here: an earlier attempt polled a release and cancelled every hold before
+      // the user could see anything.
       useEffect(() => {
-        if (!revealing) return undefined;
         const release = () => setRevealed(false);
         document.addEventListener('pointerup', release, true);
         document.addEventListener('pointercancel', release, true);
+        document.addEventListener('visibilitychange', release);
         window.addEventListener('blur', release);
         return () => {
           document.removeEventListener('pointerup', release, true);
           document.removeEventListener('pointercancel', release, true);
+          document.removeEventListener('visibilitychange', release);
           window.removeEventListener('blur', release);
         };
-      }, [revealing]);
+        // `setRevealed` is recreated every render but only touches a ref and the
+        // surface's handler, so the listeners installed once stay correct.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
 
       /** Fallback path when the composer refused the re-issued paste. */
       const copyMasked = () => {
@@ -1664,12 +1660,13 @@ window.__ModuleLoader__.load({
                 title: t('notice.viewHint'),
                 // Press-and-hold, not click: the composer carries the original
                 // only between pointerdown and release, like a revealed password.
-                // No release handler, no pointer capture and no pointerleave here:
-                // the release is owned by the document listener above. Capture
-                // swallowed every press after the first, `pointerleave` fires while
-                // moving TOWARD the button (cancelling the hold before it starts),
-                // and a second release handler appended the restored text.
+                // `onPointerUp` is the mouse path (released over the button) and
+                // the document listener above covers releasing anywhere else; the
+                // duplicate is absorbed by `setRevealed`, which is why this pair no
+                // longer appends a second copy the way it did before.
                 onPointerDown: () => setRevealed(true),
+                onPointerUp: () => setRevealed(false),
+                onPointerCancel: () => setRevealed(false),
                 onKeyDown: (event) => {
                   if (event.repeat) return;
                   setRevealed(true);
@@ -1759,18 +1756,34 @@ window.__ModuleLoader__.load({
 
       useComposerAnchor(ref);
 
-      // Expire the undo window and re-read the current Session on a slow tick.
+      // Expire the undo window, and re-read the current Session. The sidebar is
+      // also WATCHED: a session switch is a DOM change there, so the notice hides
+      // at once instead of lingering until the next tick.
       useEffect(() => {
-        const timer = window.setInterval(() => {
+        const tick = () => {
           store.sweep();
           setTick((value) => value + 1);
-        }, 1000);
-        return () => window.clearInterval(timer);
+        };
+        const timer = window.setInterval(tick, 1000);
+        let observer = null;
+        try {
+          const sidebar = document.querySelector('[data-row-key^="session:"]')?.closest('[role="tree"],[class*="sidebar"],[class*="Sidebar"]');
+          if (sidebar !== null && sidebar !== undefined && typeof MutationObserver === 'function') {
+            observer = new MutationObserver(tick);
+            observer.observe(sidebar, { attributes: true, attributeFilter: ['class', 'data-row-key', 'aria-selected'], subtree: true });
+          }
+        } catch {
+          // Without the observer the 1s tick still settles it.
+        }
+        return () => {
+          window.clearInterval(timer);
+          observer?.disconnect();
+        };
       }, []);
 
       if (record === null) return null;
-      // Ownership, not a session id: switching conversations unmounts the
-      // composer the paste happened in, which hides the notice with it.
+      // Identity, not connectivity: the composer survives a conversation switch,
+      // so ownership comes from the Session the paste happened in.
       if (!recordBelongsToView(record)) return null;
 
       return h(

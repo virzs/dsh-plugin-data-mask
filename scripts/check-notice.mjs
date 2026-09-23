@@ -136,41 +136,11 @@ if (typeof reveal === 'object') {
   record('hold to reveal', reveal);
 }
 
-// Switching conversation must take the notice away, and coming back must bring it
-// back. The switch is simulated by replacing the composer (which is what a Session
-// change does): the record's editor then belongs to a conversation that is no
-// longer on screen, and the re-mounted composer restores it by fingerprint.
-const switched = await evaluate(`(async () => {
-  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const before = document.querySelector('.dsh-data-mask-notice') !== null;
-  const card = document.querySelector('[data-composer-card]');
-  if (card === null) return { before, reason: 'no composer card' };
-  const parent = card.parentElement;
-  // The other conversation's composer: same job, DIFFERENT structure, so the
-  // record's fingerprint must not match it.
-  const other = card.cloneNode(true);
-  other.removeAttribute('data-composer-card');
-  other.className = 'other-session-composer';
-  const field = other.querySelector('[data-composer-input]');
-  if (field !== null) field.className = 'other-session-field';
-  document.body.append(other);
-  card.remove();
-  await wait(2000);
-  const afterSwitch = document.querySelector('.dsh-data-mask-notice') !== null;
-  // Come back: the original composer returns and the notice must return with it.
-  other.remove();
-  parent.append(card);
-  await wait(2000);
-  const afterReturn = document.querySelector('.dsh-data-mask-notice') !== null;
-  return { before, afterSwitch, afterReturn };
-})()`);
-if (typeof switched === 'object') {
-  record('notice visible in its own conversation', switched.before === true);
-  record('notice hidden while another conversation is on screen', switched.afterSwitch === false ? `(${String(switched.reason ?? 'composer replaced')})` : false);
-  record('notice returns with its conversation', switched.afterReturn === true ? 'shown again' : false);
-} else {
-  record('session switch', switched);
-}
+// Switching conversation ownership is checked in a REAL Session by
+// scripts/check-session-flow.mjs: the composer survives a switch (its ancestor
+// chain is byte-identical, measured), so ownership comes from the sidebar's
+// selected row and cannot be simulated by swapping the composer node here.
+record('session ownership is covered by check-session-flow.mjs', 'see that script');
 
 console.log(results.join('\n'));
 const relevant = consoleLines.filter((line) => line.includes('data-mask') || line.includes('exception'));

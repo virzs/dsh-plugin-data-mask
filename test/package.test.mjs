@@ -93,23 +93,37 @@ test('the reveal swaps the composer, not only the notice', () => {
   assert.match(client, /if \(current !== expected\) return false;/);
 });
 
-test('the hold-to-reveal hold has exactly one release path', () => {
-  // The button used to carry its own release handler AND rely on the document
-  // listener; one pointerup then ran the restore twice, and the second pass
-  // appended the text instead of replacing it. The document listener owns the
-  // release, the pointer-leave shortcut is gone (it fired on the way to the
-  // button and cancelled the hold), and every decision re-reads the draft.
+test('the hold-to-reveal hold cannot stick and cannot double-write', () => {
+  // Every previous attempt failed on one of these two:
+  //  - a cached flag went stale, so later presses were skipped;
+  //  - two release paths each ran the restore, and the second APPENDED the text.
+  // The current design is idempotent in both places instead of relying on exactly
+  // one caller, and carries no release timer (a poll cancelled every hold).
   const notice = client.slice(client.indexOf('function MaskNotice('));
+  assert.match(notice, /const heldRef = useRef\(false\);/);
+  assert.match(notice, /if \(heldRef\.current === next\) return;/);
+  // Release is heard in both places on purpose; the duplicate is absorbed.
   assert.match(notice, /document\.addEventListener\('pointerup', release, true\)/);
-  assert.doesNotMatch(notice, /onPointerUp:/);
-  assert.doesNotMatch(notice, /onPointerCancel:/);
-  assert.doesNotMatch(notice, /onPointerLeave:/);
+  assert.match(notice, /onPointerUp: \(\) => setRevealed\(false\)/);
+  // No poll-based release: a timer here breaks holding entirely.
+  assert.doesNotMatch(notice, /setInterval\(release/);
   // Pointer capture swallowed every press after the first one.
   assert.doesNotMatch(client, /setPointerCapture/);
-  // The reveal and the undo both judge from the live draft, not a cached flag.
-  assert.match(notice, /const live = probeDraft\(record\);/);
-  assert.match(notice, /if \(live === 'original' \|\| live === 'swapped'\)/);
+  // And the write itself is idempotent against a repeated report.
   assert.match(client, /if \(reveal \? live === 'swapped' : live === 'masked'\) return;/);
+});
+
+test('the notice belongs to the Session the paste happened in', () => {
+  // The composer SURVIVES a conversation switch — its whole ancestor chain is
+  // byte-identical before and after (measured), so "the node is still mounted"
+  // proved nothing and the notice followed the user around. Ownership comes from
+  // the sidebar's selected row instead, and the sidebar is watched so the notice
+  // hides at once rather than on the next tick.
+  assert.match(client, /function currentSessionKey\(\)/);
+  assert.match(client, /\[data-row-key\^="session:"\]\[class\*="selected"\]/);
+  assert.match(client, /sessionKey: currentSessionKey\(\)/);
+  assert.match(client, /if \(owner === null\) return now === null;/);
+  assert.match(client, /new MutationObserver\(tick\)/);
 });
 
 test('the notice matches the composer card width', () => {
