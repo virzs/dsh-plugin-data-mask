@@ -66,6 +66,33 @@ test('the settings page uses the shell type scale and theme tokens', () => {
   assert.deepEqual(hardcoded, [], `hardcoded colors found: ${hardcoded.join(', ')}`);
 });
 
+test('no helper is declared twice', () => {
+  // A stale duplicate silently wins (a later declaration shadows the earlier
+  // one), which is exactly how the notice kept using an outdated placement rule
+  // after the new rule had been written.
+  const names = [...client.matchAll(/^ {4}function ([A-Za-z_$][\w$]*)\(/gm)].map((match) => match[1]);
+  const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
+  assert.deepEqual(duplicates, [], `declared twice: ${duplicates.join(', ')}`);
+});
+
+test('the notice anchors to the shell-marked composer card', () => {
+  // Geometry cannot identify the card: it is ~27% narrower than the viewport on
+  // the start screen and ~68% narrower inside a session, and the field's own
+  // scrollport sits inside it. The shell's own marker is the only safe anchor.
+  assert.match(client, /closest\?\.\('\[data-composer-card\]'\)/);
+  // Placed above the card, never over the composer.
+  assert.match(client, /window\.innerHeight - rect\.top \+ 8/);
+  assert.doesNotMatch(client, /window\.innerHeight - rect\.bottom/);
+});
+
+test('the reveal swaps the composer, not only the notice', () => {
+  // The requirement: holding 按住查看原文 shows the original IN the composer.
+  assert.match(client, /function swapDraft\(record, reveal\)/);
+  assert.match(client, /dispatchPaste\(editor, target\)/);
+  // Releasing must not clobber a draft the user changed while holding.
+  assert.match(client, /if \(current !== expected\) return false;/);
+});
+
 test('the package ships no module-table subpath artifact', () => {
   const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.equal(manifest.exports['./client-engine'], undefined);

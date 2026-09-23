@@ -519,7 +519,8 @@ window.__ModuleLoader__.load({
         'notice.title': '已脱敏 {count} 处',
         'notice.titleWithPreview': '已脱敏 {count} 处：{preview}',
         'notice.view': '按住查看原文',
-        'notice.viewHint': '按住不放才显示原文，松开即恢复脱敏文本',
+        'notice.revealed': '输入框已切到原文（共 {total} 处敏感信息），松开即恢复脱敏文本',
+        'notice.viewHint': '按住时输入框临时显示原文，松开立即恢复脱敏文本',
         'notice.undo': '撤销脱敏',
         'notice.undoHint': '把原文放回输入框（仅当草稿未被改动且仍在 10 分钟内可用）',
         'notice.undone': '已撤销，原文已放回输入框',
@@ -563,7 +564,8 @@ window.__ModuleLoader__.load({
         'notice.title': 'Masked {count} value(s)',
         'notice.titleWithPreview': 'Masked {count}: {preview}',
         'notice.view': 'Hold to reveal',
-        'notice.viewHint': 'The original shows only while held; releasing restores the masked text',
+        'notice.revealed': 'The composer shows the original ({total} sensitive value(s)); release to mask again',
+        'notice.viewHint': 'The composer shows the original while held, and masks again on release',
         'notice.undo': 'Undo masking',
         'notice.undoHint': 'Puts the original back into the composer (only while the draft is untouched and within 10 minutes)',
         'notice.undone': 'Undone — the original is back in the composer',
@@ -809,6 +811,7 @@ window.__ModuleLoader__.load({
           total: result.total,
           editor: editorBefore,
           applied: null,
+          swapped: false,
           draftState: 'unknown',
           undone: false,
         });
@@ -836,6 +839,64 @@ window.__ModuleLoader__.load({
     /** The record whose paste success is still being measured, if any. */
     let pendingProbe = null;
 
+    /**
+     * Whether the notice still belongs to the conversation on screen.
+     *
+     * The shell exposes no session id in the DOM, so ownership is judged by the
+     * recorded editor itself: switching conversations unmounts the composer the
+     * paste happened in, which is exactly the signal needed. An editor that is
+     * still mounted (the start screen) keeps its notice.
+     *
+     * @param record - the masked-paste record.
+     * @returns whether the notice should be shown.
+     */
+    function recordBelongsToView(record) {
+      const recorded = record?.editor;
+      if (!(recorded instanceof HTMLElement)) return true;
+      return recorded.isConnected;
+    }
+
+    /**
+     * The composer card: the element the shell itself marks.
+     *
+     * The shell stamps `data-composer-card` on the card, which is the only
+     * deterministic anchor here. Geometry does not work: the card is only ~27%
+     * narrower than the viewport in the start-screen layout, and in a session it
+     * is ~68% narrower, so no single width or height rule identifies it. The
+     * ancestor walk remains as a fallback for a shell that stops marking it.
+     *
+     * @param element - the editable field.
+     * @returns the card element, or the field when no card can be identified.
+     */
+    function composerCardOf(element) {
+      const marked = element.closest?.('[data-composer-card]');
+      if (marked !== null && marked !== undefined) return marked;
+      for (let node = element.parentElement; node !== null && node !== document.body; node = node.parentElement) {
+        if (node.hasAttribute('data-slot') && node.getBoundingClientRect().height === 0) break;
+        if (node.getAttribute('data-composer-card') !== null) return node;
+      }
+      return element;
+    }
+
+    /**
+     * Where the notice belongs: just ABOVE the composer card, never over it.
+     *
+     * The notice is an annotation about the draft, so it sits outside the input
+     * area; overlapping the field would also steal clicks from the text.
+     * @returns inline positioning for the overlay, or a fixed fallback.
+     */
+    function noticeOffset() {
+      try {
+        const field = document.querySelector('[data-composer-input]')
+          ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
+        if (field === null) return { bottom: '18px' };
+        const rect = composerCardOf(field).getBoundingClientRect();
+        return { bottom: `${String(Math.round(Math.max(12, window.innerHeight - rect.top + 8)))}px` };
+      } catch {
+        return { bottom: '18px' };
+      }
+    }
+
     /** @returns the comparable draft text of a contenteditable / textarea / input. */
     function editorText(element) {
       if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) return element.value;
@@ -861,16 +922,22 @@ window.__ModuleLoader__.load({
 
     /**
      * How a record's masked draft relates to what the composer holds now.
+     *
+     * `swapped` is the state this plugin creates itself while 按住查看原文 is
+     * held: the composer briefly carries the original so the user reads it in
+     * place. The state is carried on the record (`record.swapped`) because the
+     * masked text cannot be derived from the original.
+     *
      * @param record - the masked-paste record.
-     * @returns `'none'` without an editor, `'masked'` when the draft is untouched,
-     * `'original'` after an undo, `'diverged'` when the user edited it since.
+     * @returns `'none'` without an editor, otherwise `'masked'`, `'original'`,
+     * `'swapped'`, or `'diverged'` when the user edited the draft since.
      */
     function probeDraft(record) {
       const editor = liveEditor(record);
       if (editor === null) return 'none';
       const current = editorText(editor);
       if (current === record.draft) return 'masked';
-      if (current === record.original) return 'original';
+      if (current === record.original) return record.swapped === true ? 'swapped' : 'original';
       return 'diverged';
     }
 
@@ -898,6 +965,49 @@ window.__ModuleLoader__.load({
           applied: record.applied === null ? draftState !== 'none' : record.applied,
         });
       }, delay);
+    }
+
+    /**
+     * Show the original in the COMPOSER while 按住查看原文 is held, and put the
+     * masked draft back on release.
+     *
+     * The reveal is an in-place read: the point is to check what the model will
+     * actually receive, in the field it will be sent from. The release restore is
+     * skipped when the draft diverged, so a reveal can never clobber an edit the
+     * user made while holding.
+     *
+     * @param record - the masked-paste record.
+     * @param reveal - `true` to write the original, `false` to put the mask back.
+     * @returns whether the composer now holds the requested variant.
+     */
+    function swapDraft(record, reveal) {
+      const editor = liveEditor(record);
+      if (editor === null || !isContentEditable(editor)) return false;
+      const target = reveal ? record.original : record.draft;
+      const current = editorText(editor);
+      if (current === target) return true;
+      const expected = reveal ? record.draft : record.original;
+      if (current !== expected) return false;
+      try {
+        editor.focus({ preventScroll: true });
+        if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+          editor.setSelectionRange(0, current.length);
+        } else {
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          const selection = window.getSelection();
+          if (selection === null) return false;
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.dispatchEvent(new Event('selectionchange'));
+        }
+      } catch {
+        return false;
+      }
+      const dispatched = dispatchPaste(editor, target);
+      pendingProbe = { record: store.getRecord(), before: current };
+      scheduleProbe();
+      return dispatched;
     }
 
     /**
@@ -1297,17 +1407,18 @@ window.__ModuleLoader__.load({
      * @param props.onUndone - marks the record as undone.
      * @param props.onDismiss - drops the record.
      */
-    function MaskNotice({ record, onUndone, onDismiss }) {
-      const [revealed, setRevealed] = useState(false);
+    function MaskNotice({ record, onUndone, onDismiss, onRecordChange }) {
       const [failure, setFailure] = useState(false);
       const [copied, setCopied] = useState(false);
       const [expiresIn, setExpiresIn] = useState(() => Math.max(0, store.getExpiresAt() - Date.now()));
 
+      const revealing = record.swapped === true;
       useEffect(() => {
-        if (record.undone) return undefined;
+        // A held reveal is an active read: no countdown churn while it is held.
+        if (record.undone || revealing) return undefined;
         const timer = window.setInterval(() => setExpiresIn(Math.max(0, store.getExpiresAt() - Date.now())), 1000);
         return () => window.clearInterval(timer);
-      }, [record.undone]);
+      }, [record.undone, revealing]);
 
       const preview = record.hits.map((hit) => `${hit.label}×${hit.count}`).join('、');
       // `applied === null` means the paste verdict has not settled yet.
@@ -1321,6 +1432,19 @@ window.__ModuleLoader__.load({
           return;
         }
         setFailure(true);
+      };
+
+      /**
+       * Write one variant into the composer, keeping the record's own state in
+       * step so the countdown and the read-back stay honest.
+       * @param reveal - whether the composer should show the original.
+       * @returns whether the write was refused.
+       */
+      const setRevealed = (reveal) => {
+        if (record.swapped === reveal) return;
+        const applied = swapDraft(record, reveal);
+        onRecordChange({ ...record, swapped: applied ? reveal : false, draftState: 'unknown' });
+        if (!applied && reveal) setFailure(true);
       };
 
       /** Fallback path when the composer refused the re-issued paste. */
@@ -1340,8 +1464,10 @@ window.__ModuleLoader__.load({
         { className: 'dsh-data-mask-notice', 'data-tone': failure || unwritten || diverged ? 'warn' : 'info' },
         h(
           'span',
-          { className: 'dsh-data-mask-notice-preview', 'data-revealed': revealed ? 'true' : 'false' },
-          revealed ? record.original : t('notice.titleWithPreview', { count: record.total, preview }),
+          { className: 'dsh-data-mask-notice-preview', 'data-revealed': revealing ? 'true' : 'false' },
+          revealing
+            ? t('notice.revealed', { total: record.total })
+            : t('notice.titleWithPreview', { count: record.total, preview }),
         ),
         record.undone
           ? h('small', null, t('notice.undone'))
@@ -1353,8 +1479,8 @@ window.__ModuleLoader__.load({
               {
                 type: 'button',
                 title: t('notice.viewHint'),
-                // Press-and-hold, not click: the original exists only between
-                // pointerdown and release, like a revealed password field.
+                // Press-and-hold, not click: the composer carries the original
+                // only between pointerdown and release, like a revealed password.
                 onPointerDown: (event) => {
                   event.currentTarget.setPointerCapture?.(event.pointerId);
                   setRevealed(true);
@@ -1378,7 +1504,7 @@ window.__ModuleLoader__.load({
         failure ? h('small', null, t('notice.failed')) : null,
         unwritten && !record.undone ? h('small', null, t('notice.notApplied')) : null,
         diverged && !record.undone ? h('small', null, t('notice.diverged')) : null,
-        !unwritten && !diverged && !record.undone
+        !unwritten && !diverged && !record.undone && !revealing
           ? h('small', null, t('notice.autoHide', { minutes: Math.max(1, Math.ceil(expiresIn / 60000)) }))
           : null,
         h('span', { className: 'dsh-data-mask-notice-spacer' }),
@@ -1387,30 +1513,44 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Where to park the notice: just below the composer card.
+     * Keep the overlay just above the composer card.
      *
-     * The editable field is not the card — the card adds the tool row and padding
-     * above it — so the anchor is the outermost ancestor that is no wider than
-     * the scrollport, which is the card itself. Falls back to the field, then to
-     * a fixed offset, so a layout change only costs precision.
-     * @returns inline positioning for the overlay.
+     * Measured against the live card instead of being computed at render time:
+     * the card appears and moves after the notice mounts, and a stale measurement
+     * is what left the notice sitting over the input field. A `ResizeObserver`
+     * follows the card as the draft grows.
+     *
+     * @param ref - the overlay element.
      */
-    function noticeOffset() {
-      try {
-        const field = document.querySelector('[data-composer-input]')
-          ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
-        if (field === null) return { bottom: '18px' };
-        let anchor = field;
-        for (let node = field.parentElement; node !== null && node !== document.body; node = node.parentElement) {
-          const style = window.getComputedStyle(node);
-          if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
-          if (style.display === 'flex' || style.display === 'block') anchor = node;
+    function useComposerAnchor(ref) {
+      useEffect(() => {
+        const place = () => {
+          const element = ref.current;
+          if (element === null) return;
+          element.style.bottom = noticeOffset().bottom;
+        };
+        place();
+        let observer = null;
+        try {
+          const field = document.querySelector('[data-composer-input]')
+            ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
+          if (field !== null && typeof ResizeObserver === 'function') {
+            observer = new ResizeObserver(place);
+            observer.observe(composerCardOf(field));
+          }
+        } catch {
+          // Without an observer the notice still follows resize, scroll and the tick.
         }
-        const rect = anchor.getBoundingClientRect();
-        return { bottom: `${String(Math.round(Math.max(12, window.innerHeight - rect.bottom + 8)))}px` };
-      } catch {
-        return { bottom: '18px' };
-      }
+        window.addEventListener('resize', place);
+        window.addEventListener('scroll', place, true);
+        const timer = window.setInterval(place, 1200);
+        return () => {
+          observer?.disconnect();
+          window.removeEventListener('resize', place);
+          window.removeEventListener('scroll', place, true);
+          window.clearInterval(timer);
+        };
+      }, [ref]);
     }
 
     /**
@@ -1419,23 +1559,38 @@ window.__ModuleLoader__.load({
      * The composer dock is session-scoped, so on the start screen this overlay is
      * the only place the notice — and therefore 按住查看原文 / 撤销 — can appear.
      * Configuration lives in the shell's Settings panel, not here.
+     *
+     * The notice belongs to the Session the paste happened in: it is hidden while
+     * another Session is on screen, and comes back when that Session returns.
      */
     function MaskNoticeSurface() {
       const record = useSyncExternalStore(store.subscribe, store.getRecord, store.getRecord);
+      const [, setTick] = useState(0);
+      const ref = useRef(null);
 
-      // Expire the undo window even while the notice is never touched.
+      useComposerAnchor(ref);
+
+      // Expire the undo window and re-read the current Session on a slow tick.
       useEffect(() => {
-        const timer = window.setInterval(() => store.sweep(), 15000);
+        const timer = window.setInterval(() => {
+          store.sweep();
+          setTick((value) => value + 1);
+        }, 5000);
         return () => window.clearInterval(timer);
       }, []);
 
       if (record === null) return null;
+      // Ownership, not a session id: switching conversations unmounts the
+      // composer the paste happened in, which hides the notice with it.
+      if (!recordBelongsToView(record)) return null;
+
       return h(
         'div',
-        { className: 'dsh-data-mask-overlay', style: noticeOffset() },
+        { className: 'dsh-data-mask-overlay', ref },
         h(Boundary, null, h(MaskNotice, {
           record,
-          onUndone: () => store.setRecord({ ...record, undone: true }),
+          onUndone: () => store.setRecord({ ...record, undone: true, swapped: false }),
+          onRecordChange: (next) => store.setRecord(next),
           onDismiss: () => store.setRecord(null),
         })),
       );

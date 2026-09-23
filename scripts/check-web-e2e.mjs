@@ -162,25 +162,27 @@ const notice = await evaluate(`(() => {
 record('masked-paste notice rendered', notice === null ? false : `"${notice.text}"`);
 record('notice offers 按住查看原文 + 撤销脱敏', notice !== null && notice.buttons.some((b) => b.includes('查看原文')) && notice.buttons.some((b) => b.includes('撤销')));
 
-// 5. Hold-to-reveal shows the original only while held.
+// 5. Hold-to-reveal: the COMPOSER carries the original while held, and the mask
+//    comes back on release. (This check lives here as a smoke test; the full
+//    notice behaviour is covered by scripts/check-notice.mjs.)
 const reveal = await evaluate(`(async () => {
   const notice = document.querySelector('.dsh-data-mask-notice');
+  const editor = document.querySelector('[data-composer-input],[contenteditable=""],[contenteditable="true"]');
   if (notice === null) return 'no notice';
   const button = [...notice.querySelectorAll('button')].find((b) => b.textContent.includes('查看原文'));
   if (button === undefined) return 'no reveal button';
-  const preview = () => notice.querySelector('.dsh-data-mask-notice-preview').textContent;
-  const before = preview();
+  const before = editor.textContent;
   button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  const held = preview();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const held = editor.textContent;
   button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  return { before, held, after: preview() };
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  return { before, held, after: editor.textContent };
 })()`);
 if (typeof reveal === 'object') {
-  record('reveal hidden by default', !reveal.before.includes('13812345678') ? `"${reveal.before.slice(0, 60)}"` : false);
-  record('original visible while held', reveal.held.includes('13812345678') ? `"${reveal.held.slice(0, 60)}"` : false);
-  record('hidden again after release', !reveal.after.includes('13812345678'));
+  record('composer masked before reveal', !reveal.before.includes('13812345678') ? `"${reveal.before}"` : false);
+  record('composer shows the original while held', reveal.held.includes('13812345678') ? `"${reveal.held}"` : false);
+  record('composer masked again after release', !reveal.after.includes('13812345678') && reveal.after.includes('[手机号') ? `"${reveal.after}"` : false);
 } else {
   record('hold-to-reveal', reveal);
 }
