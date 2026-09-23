@@ -169,11 +169,75 @@ export function isIpv6(raw) {
  * collapses to `key --> [连接串]`.
  * @param raw - the whole matched connection string.
  */
-function connectionTarget(raw) {
+function connectionTarget(raw, strategy) {
+  void strategy;
   const uri = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
   if (uri !== null) return `[${uri[1]} 连接串]`;
   const assignment = /^([A-Za-z_][A-Za-z0-9_-]*)\s*[=:]/i.exec(raw);
   return assignment === null ? '[连接串]' : `${assignment[1]} --> [连接串]`;
+}
+
+/**
+ * Per-field labels for the field-name rule, so `"name":"张三"` becomes
+ * `"name": "姓名"` rather than a generic `[敏感字段值]`.
+ *
+ * The keys are the keyword alternatives of that rule's pattern, and matching is
+ * longest-keyword-first so `username` wins over `name`.
+ */
+const FIELD_LABELS = [
+  ['user_name', '用户名'],
+  ['real_name', '姓名'],
+  ['nick_name', '昵称'],
+  ['user_name', '用户名'],
+  ['work_no', '工号'],
+  ['workno', '工号'],
+  ['username', '用户名'],
+  ['nickname', '昵称'],
+  ['realname', '姓名'],
+  ['id_card', '证件号'],
+  ['idcard', '证件号'],
+  ['id_no', '证件号'],
+  ['uname', '用户名'],
+  ['phone', '手机号'],
+  ['mobile', '手机号'],
+  ['email', '邮箱'],
+  ['name', '姓名'],
+  ['user', '用户'],
+  ['tel', '电话'],
+  ['mail', '邮箱'],
+  ['idno', '证件号'],
+  ['no', '编号'],
+  ['account', '账号'],
+];
+
+/**
+ * Replace a field's value with a label chosen from the field's own name.
+ *
+ * The field name, its quoting style and the original spacing are preserved so
+ * the surrounding JSON stays parseable and the diff stays readable. In `partial`
+ * mode this deliberately masks WHOLE (like `label`): the value was replaced
+ * because of its field, and a short value would be mostly revealed by a partial
+ * mask, which is the opposite of the point.
+ *
+ * @param raw - the whole `"field": value` match.
+ * @param strategy - the resolved mask strategy (`label` / `partial` / `redact`).
+ * @returns the same field with its value replaced.
+ */
+function fieldNameTarget(raw, strategy) {
+  const parts = /^(["']?)([^"':=\s]+)\1(\s*[:=]\s*)([\s\S]*)$/.exec(raw);
+  if (parts === null) return '[敏感字段值]';
+  const [, quote, field, separator, value] = parts;
+  const lowered = field.toLowerCase();
+  const key = FIELD_LABELS
+    .slice()
+    .sort((left, right) => right[0].length - left[0].length)
+    .find(([keyword]) => lowered.includes(keyword));
+  const label = key === undefined ? '敏感字段值' : key[1];
+  const quoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
+  const rendered = strategy === 'redact' ? '******' : label;
+  // Keep the value's own quoting style so nothing downstream has to re-parse it.
+  const masked = quote === '' && !quoted ? `[${rendered}]` : `${quoted ? value.charAt(0) : ''}${rendered}${quoted ? value.charAt(0) : ''}`;
+  return `${quote}${field}${quote}${separator}${masked}`;
 }
 
 /**
@@ -219,6 +283,27 @@ export const RULES = [
     // lets `api_key=`, `dbPassword=` and a bare `key=` share one alternative.
     find: /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]*:[^\s"'`<>]*@[^\s"'`<>]+|\b\w*(?:pass(word|wd)?|pwd|key|token)\s*[=:]\s*["']?[^\s"',;]{6,}["']?/gi,
     maskWith: connectionTarget,
+  },
+  {
+    id: 'fieldname',
+    label: '敏感字段值',
+    hint: '键名像 name/username/work_no/no/phone/id_card 时，值无条件替换',
+    // Runs before every value-shaped rule: a short value such as `"name":"12312"`
+    // or `"no":"1"` can never be recognized by its shape, and when a field is
+    // identified the field itself is the evidence, so the value is replaced
+    // whatever it looks like.
+    order: 28,
+    enabled: true,
+    // The value is matched generously (any quoted string, or a bare number/word)
+    // because the field name already decided; the replacement puts the quotes
+    // back so the surrounding JSON stays valid.
+    //
+    // Boundaries matter here: `\w*` absorbs a prefix (`work_no` → `no`, and on
+    // the label side `order_no` → `no`), while the boundary before the keyword and
+    // the one after it keep `version`, `amount`, `support`, `country` and
+    // `username` (matched as `user_name`/`_name`, not as `uname`) intact.
+    find: /(["']?)(?:[\w-]*(?:name|username|uname|user|realname|nickname|account)|[\w-]*(?:phone|mobile|tel|email|mail|idcard|id_card|idno|id_no)\b[\w-]*|(?:[\w-]*_)?no|workno|work_no)\1\s*[:=]\s*("[^"]*"|'[^']*'|[\w.-]+)/gi,
+    maskWith: fieldNameTarget,
   },
   {
     id: 'secret',
@@ -426,7 +511,7 @@ export function sanitize(text, options = {}) {
  * @param strategy - the resolved mask strategy.
  */
 function replacementFor(rule, value, strategy) {
-  if (typeof rule.maskWith === 'function') return rule.maskWith(value);
+  if (typeof rule.maskWith === 'function') return rule.maskWith(value, strategy);
   if (typeof rule.mask === 'string' && rule.mask !== '') {
     return rule.mask.replace(/\{value\}/g, value);
   }

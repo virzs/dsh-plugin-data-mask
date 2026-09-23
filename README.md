@@ -49,9 +49,10 @@
 | --- | --- | --- |
 | 证书/私钥 | PEM 私钥、证书块 | — |
 | JWT 令牌 | 三段式 JWT | 头部必须是合法 base64url JSON |
+| 数据库连接串 | `scheme://user:pass@host`、`password=`/`api_key=` 赋值 | — |
+| **敏感字段值** | **键名命中关键词时，值无条件替换**（短值也能处理） | 键名边界匹配 |
 | API 密钥 | `sk-`、`ghp_`、`AKIA`、`AIza`、`xoxb-` 等前缀 | — |
 | Authorization 头 | `Bearer` / `Basic` 凭据 | — |
-| 数据库连接串 | `scheme://user:pass@host`、`password=`/`api_key=` 赋值 | — |
 | 银行卡号 | 13–19 位数字 | Luhn 校验 |
 | 身份证号 | 18 位（含校验位）、15 位 | GB 11643 校验位 + 出生日期 |
 | 邮箱地址 | 常见邮箱写法 | — |
@@ -61,7 +62,28 @@
 | IPv6 地址 | 含 `::` 压缩写法 | 结构化校验（8 组或压缩） |
 | QQ 号 | `QQ: 12345678` | 默认关闭 |
 
-优先级按“越具体越先匹配”排列，命中区间不会被后面的规则二次替换：16 位银行卡不会被当成手机号，MAC 地址不会被当成 IPv6。
+### 敏感字段值：按字段名脱敏
+
+值形态的正则对**短值**无能为力 —— `"name":"12312"`、`"no":"1"`、`"phone":"123"` 既不是手机号也不是身份证，靠值永远识别不出来。这类按**键名**处理：
+
+| 键名命中 | 标签 | 例子 |
+| --- | --- | --- |
+| `name` / `real_name` | 姓名 | `"name":"12312"` → `"name":"姓名"` |
+| `username` / `user_name` / `uname` / `nickname` | 用户名 / 昵称 | `"username":"123123"` → `"username":"用户名"` |
+| `work_no` / `workno` / `no` / `order_no` | 工号 / 编号 | `"work_no":"A1001"` → `"work_no":"工号"` |
+| `phone` / `mobile` / `tel` | 手机号 / 电话 | `"phone":"123132"` → `"phone":"手机号"` |
+| `email` / `mail` | 邮箱 | `"email":"12321"` → `"email":"邮箱"` |
+| `id_card` / `idcard` / `idno` | 证件号 | `"id_card":"…"` → `"id_card":"证件号"` |
+
+设计上的三个要点：
+
+1. **边界匹配**：`\w*` 前缀吸收前缀，所以 `work_no`、`order_no` 都能命中 `no`；而 `version`、`amount`、`count`、`support`、`country` 不受影响（`support` 里的 `sup` 不是关键词，`country` 里的 `un` 也不是）。
+2. **保持 JSON 合法**：只替换值，保留键名、引号风格与原始空格，`"no" : "1"` 变成 `"no" : "编号"`，脱敏后仍然可以直接 `JSON.parse`。
+3. **幂等**：替换结果是标签而不是值，所以把已脱敏文本再粘一次不会二次改写或套娃（有测试守着）。
+
+优先级上这条规则排在所有值形态规则**之前**：字段名已经确定了敏感，值长什么样都无关。`partial` 模式下它按整值处理（短值做部分掩码等于把值露出来，与目的相反），`redact` 模式照常打星号。可在设置页逐条开关。
+
+优先级按“越具体越先匹配”排列，命中区间不会被后面的规则二次替换：16 位银行卡不会被当成手机号，MAC 地址不会被当成 IPv6，敏感字段的值也不会被值形态规则二次改写。
 
 ## 隐私边界
 
@@ -116,6 +138,9 @@ scripts/check-web-e2e.mjs        无头 Chrome：验证粘贴脱敏、按住查�
 scripts/check-web-settings.mjs   无头 Chrome：验证设置页渲染/切换持久化/开关生效
 scripts/check-notice.mjs         无头 Chrome：验证提示条位置/按住查看/会话归属（切走与切回）
 scripts/check-notice-align.mjs   无头 Chrome：验证提示条与输入框左右对齐等宽、真实指针连按三次
+scripts/check-field-rule.mjs     无头 Chrome：验证按字段名脱敏（短值 JSON）在真实页面生效
+scripts/probe-field-rule.mjs     本地探针：打印字段名规则在每个键上的判定（含误伤检查）
+scripts/probe-field-idempotence.mjs  本地探针：验证「把脱敏结果再粘一次」不会二次改写
 scripts/check-reveal-cycle.mjs   无头 Chrome：验证提示条宽度=输入框宽度、连续多次按住查看
 scripts/check-page.mjs           无头 Chrome：页面现状排查（选择器找不到时用）
 scripts/check-composer-dom.mjs   无头 Chrome：打印输入框区域的 DOM 与 data-* 标记

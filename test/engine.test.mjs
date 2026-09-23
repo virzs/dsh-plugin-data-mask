@@ -146,6 +146,77 @@ test('a custom rule cannot re-mask a span a built-in rule already claimed', () =
   assert.equal(mask('电话 13812345678', { customRules: rules }), '电话 [手机号/固话]');
 });
 
+test('a short value under a sensitive field name is replaced by its field label', () => {
+  // The requirement: values like `"name":"12312"` or `"no":"1"` can never be
+  // recognized by their shape, so the FIELD name is the evidence.
+  const output = mask('{"name":"12312","username":"user01","work_no":"A1001","no":"1"}');
+  assert.equal(output, '{"name":"姓名","username":"用户名","work_no":"工号","no":"编号"}');
+  // The surrounding JSON survives: the quotes are put back.
+  assert.deepEqual(JSON.parse(output), {
+    name: '姓名', username: '用户名', work_no: '工号', no: '编号',
+  });
+});
+
+test('the field rule keeps unrelated fields intact', () => {
+  // Boundary matching is what makes this safe: `\w*` absorbs a prefix so
+  // `order_no` hits `no`, while these stay untouched.
+  const input = '{"version":"1.2.3","amount":"12345","country":"+86","support":"team","remark":"ok","dead_day":null,"status":10}';
+  assert.equal(mask(input), input);
+});
+
+test('a snake or camel case spelling picks the right field label', () => {
+  assert.equal(mask('{"user_name":"u1"}'), '{"user_name":"用户名"}');
+  assert.equal(mask('{"real_name":"张三"}'), '{"real_name":"姓名"}');
+  assert.equal(mask('{"id_card":"110101199003078515"}'), '{"id_card":"证件号"}');
+  assert.equal(mask('{"mobile":"123"}'), '{"mobile":"手机号"}');
+  assert.equal(mask('{"email":"12321"}'), '{"email":"邮箱"}');
+});
+
+test('the field rule keeps the spelling and spacing it replaced', () => {
+  assert.equal(mask('name = zhangsan'), 'name = [姓名]');
+  assert.equal(mask('{"no" : "1"}'), '{"no" : "编号"}');
+  assert.equal(mask("{'name': 'x'}"), "{'name': '姓名'}");
+  assert.equal(mask('{"name":"张三","phone":"13812345678"}'), '{"name":"姓名","phone":"手机号"}');
+});
+
+test('the field rule follows the configured mode', () => {
+  // A whole-value label cannot be partially masked, so `partial` masks whole too;
+  // `redact` must still redact — it used to be ignored by every maskWith rule.
+  assert.equal(mask('{"name":"张三"}', { mode: 'partial' }), '{"name":"姓名"}');
+  assert.equal(mask('{"name":"张三"}', { mode: 'redact' }), '{"name":"******"}');
+  assert.equal(mask('mysql://root:pw@10.0.0.8/db', { mode: 'redact' }), '[mysql 连接串]');
+});
+
+test('masking a field value twice does not drift', () => {
+  // The replacement is a label, and a label must not look like a value again:
+  // pasting already-masked text back through the engine has to be a no-op.
+  for (const mode of ['label', 'partial', 'redact']) {
+    for (const input of [
+      '{"name":"12312","username":"u1","work_no":"A1001","no":"1"}',
+      '{"name":"张三","no":"1"}',
+      'name = zhangsan, no = 7',
+    ]) {
+      const once = mask(input, { mode });
+      assert.equal(mask(once, { mode }), once, `drift in ${mode} mode for ${input}`);
+    }
+  }
+  // A label sitting in an unrelated field must not attract the rule either.
+  assert.equal(mask('{"remark":"姓名","version":"1.2.3"}'), '{"remark":"姓名","version":"1.2.3"}');
+});
+
+test('a field value is never re-masked by a value-shaped rule', () => {
+  // The field rule outranks the value rules, so a long phone under `phone` reads
+  // as a phone either way, while a 16-digit card under `id_card` is labelled by
+  // its FIELD rather than as a bank card.
+  assert.deepEqual(sanitize('{"phone":"13812345678"}').hits.map((hit) => hit.id), ['fieldname']);
+  assert.deepEqual(sanitize('{"id_card":"4111111111111111"}').hits.map((hit) => hit.id), ['fieldname']);
+});
+
+test('a value-shaped match keeps working outside any field', () => {
+  const { hits } = sanitize('联系 13812345678 或 zhangsan@example.com');
+  assert.deepEqual(hits.map((hit) => hit.id), ['email', 'phone']);
+});
+
 test('the exported validators behave as documented', () => {
   assert.equal(luhn('4111 1111 1111 1111'), true);
   assert.equal(luhn('4111111111111112'), false);

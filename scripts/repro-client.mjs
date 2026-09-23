@@ -61,10 +61,24 @@ const reactDomStub = {
   createPortal: (node, container) => ({ portal: node, container }),
 };
 
+/**
+ * Stand-in for `@deepseek-ai/dsh-client-ui-primitives`. Only the components the
+ * Client half reaches for are needed; the plugin falls back to native controls
+ * when this module is absent, which is asserted separately.
+ */
+const primitivesStub = {
+  Switch: (props) => reactStub.createElement('button', { role: 'switch', 'aria-checked': props.checked }, props.label),
+  Checkbox: (props) => reactStub.createElement('input', { type: 'checkbox', checked: props.checked }, props.label),
+  SegmentedControl: (props) => reactStub.createElement('div', { role: 'radiogroup' }, props.label),
+  Input: (props) => reactStub.createElement('input', props),
+  Button: (props) => reactStub.createElement('button', props, props.children),
+};
+
 /** Seed words the web shell publishes into the module table. */
 const SEED = {
   react: reactStub,
   'react-dom': reactDomStub,
+  '@deepseek-ai/dsh-client-ui-primitives': primitivesStub,
 };
 
 // ---------------------------------------------------------------- DOM shims
@@ -280,9 +294,17 @@ if (client !== undefined) {
       },
     };
     client.apply(ctx);
-    const slot = registered.find((entry) => entry.options?.name === 'conversation.composer.dock');
-    if (slot === undefined) throw new Error('composer dock was not registered');
-    if (typeof slot.component !== 'function') throw new Error('dock component is not a function');
+    // The plugin registers the masked-paste notice (root scope) and its Settings
+    // page (the shell's panel), and installs the paste interceptor.
+    const slots = registered.filter((entry) => entry.options !== undefined).map((entry) => entry.options.name);
+    for (const expected of ['shell.overlay', 'settings.section']) {
+      if (!slots.includes(expected)) throw new Error(`${expected} was not registered (got ${slots.join(', ') || 'nothing'})`);
+    }
+    const notice = registered.find((entry) => entry.options?.name === 'shell.overlay');
+    if (typeof notice.component !== 'function') throw new Error('notice component is not a function');
+    const page = registered.find((entry) => entry.options?.name === 'settings.section');
+    if (typeof page.component !== 'function') throw new Error('settings component is not a function');
+    if (typeof page.options.label !== 'function') throw new Error('settings nav label must be a thunk');
   });
 }
 

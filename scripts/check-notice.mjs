@@ -102,7 +102,10 @@ const setup = await evaluate(`(async () => {
   };
 })()`);
 if (typeof setup === 'object') {
-  record('multi-line paste was masked', setup.draft.includes('[手机号/固话]') ? `"${setup.draft.replace(/\n/g, '\\n')}"` : false);
+  // A JSON payload's sensitive fields are labelled by FIELD name, so the labels
+  // are 手机号/邮箱 rather than the value-shaped 手机号/固话.
+  const maskedByField = setup.draft.includes('"phone": "手机号"') && setup.draft.includes('"email": "邮箱"');
+  record('multi-line paste was masked', maskedByField && !setup.draft.includes('13812345678') ? `"${setup.draft.replace(/\n/g, '\\n')}"` : false);
   record('notice sits ABOVE the composer card', setup.overlapsCard === false ? `card top=${String(setup.card.top)} notice bottom=${String(setup.overlay.bottom)}` : false);
   record('notice does not cover the input field', setup.overlapsField === false ? `field top=${String(setup.field.top)} notice bottom=${String(setup.overlay.bottom)}` : false);
 } else {
@@ -127,7 +130,7 @@ const reveal = await evaluate(`(async () => {
 })()`);
 if (typeof reveal === 'object') {
   record('composer shows the original while held', reveal.held.includes('13812345678') && reveal.held.includes('zhangsan@example.com') ? `"${reveal.held.replace(/\n/g, '\\n')}"` : false);
-  record('composer is masked again after release', !reveal.after.includes('13812345678') && reveal.after.includes('[手机号/固话]') ? `"${reveal.after.replace(/\n/g, '\\n')}"` : false);
+  record('composer is masked again after release', !reveal.after.includes('13812345678') && reveal.after.includes('手机号') ? `"${reveal.after.replace(/\n/g, '\\n')}"` : false);
   record('notice explains the held state', reveal.heldNotice.includes('输入框已切到原文') ? `"${reveal.heldNotice}"` : false);
 } else {
   record('hold to reveal', reveal);
