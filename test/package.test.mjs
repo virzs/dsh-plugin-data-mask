@@ -93,6 +93,28 @@ test('the reveal swaps the composer, not only the notice', () => {
   assert.match(client, /if \(current !== expected\) return false;/);
 });
 
+test('the hold-to-reveal hold has exactly one release path', () => {
+  // The button used to carry its own release handler AND rely on the document
+  // listener; one pointerup then ran the restore twice, and the second pass
+  // appended the text instead of replacing it. The document listener owns the
+  // release, and the write is guarded so a repeated report is a no-op.
+  const notice = client.slice(client.indexOf('function MaskNotice('));
+  assert.match(notice, /document\.addEventListener\('pointerup', release, true\)/);
+  assert.doesNotMatch(notice, /onPointerUp:/);
+  assert.doesNotMatch(notice, /onPointerCancel:/);
+  // Pointer capture swallowed every press after the first one.
+  assert.doesNotMatch(client, /setPointerCapture/);
+  assert.match(client, /if \(record\.swapped === reveal && record\.draftState !== 'diverged'\) return;/);
+});
+
+test('the notice matches the composer card width', () => {
+  // The owner's report: the notice was narrower than the composer. The width is
+  // measured from the card, and the stylesheet value is only a first-frame
+  // fallback.
+  assert.match(client, /width: `\$\{String\(Math\.round\(rect\.width\)\)\}px`/);
+  assert.match(client, /element\.style\.width = placement\.width/);
+});
+
 test('the package ships no module-table subpath artifact', () => {
   const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.equal(manifest.exports['./client-engine'], undefined);

@@ -879,19 +879,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Where the notice belongs: just ABOVE the composer card, never over it.
+     * Where the notice belongs: just ABOVE the composer card, never over it, and
+     * exactly as wide as the card so the two read as one column.
      *
      * The notice is an annotation about the draft, so it sits outside the input
      * area; overlapping the field would also steal clicks from the text.
      * @returns inline positioning for the overlay, or a fixed fallback.
      */
-    function noticeOffset() {
+    function noticePlacement() {
       try {
         const field = document.querySelector('[data-composer-input]')
           ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
         if (field === null) return { bottom: '18px' };
         const rect = composerCardOf(field).getBoundingClientRect();
-        return { bottom: `${String(Math.round(Math.max(12, window.innerHeight - rect.top + 8)))}px` };
+        return {
+          bottom: `${String(Math.round(Math.max(12, window.innerHeight - rect.top + 8)))}px`,
+          width: `${String(Math.round(rect.width))}px`,
+        };
       } catch {
         return { bottom: '18px' };
       }
@@ -999,6 +1003,9 @@ window.__ModuleLoader__.load({
           if (selection === null) return false;
           selection.removeAllRanges();
           selection.addRange(range);
+          // The editor keeps its own selection model and learns about a DOM
+          // range through `selectionchange`; without this the composer pastes at
+          // its own caret (appending) instead of over the draft.
           document.dispatchEvent(new Event('selectionchange'));
         }
       } catch {
@@ -1125,6 +1132,8 @@ window.__ModuleLoader__.load({
 .dsh-data-mask-overlay {
   position: fixed; left: 50%; transform: translateX(-50%);
   z-index: 40; display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  /* The width is measured from the composer card so the two line up; this is the
+     first-frame fallback for when no measurement has happened yet. */
   width: min(680px, calc(100vw - 32px)); pointer-events: none;
 }
 .dsh-data-mask-overlay:empty { display: none; }
@@ -1407,12 +1416,54 @@ window.__ModuleLoader__.load({
      * @param props.onUndone - marks the record as undone.
      * @param props.onDismiss - drops the record.
      */
-    function MaskNotice({ record, onUndone, onDismiss, onRecordChange }) {
+    /**
+     * Hold-to-reveal, owned by the surface so the composer write and the record
+     * stay in step.
+     *
+     * The state is DERIVED from the draft every time rather than remembered: a
+     * hold/release pair can fire faster than React re-renders, so a cached "we are
+     * revealing" flag is stale on the next press and every later press would be
+     * skipped (which is exactly what happened). `swapDraft` is idempotent, so a
+     * repeated press is a no-op and a release always puts the mask back.
+     *
+     * @param record - the masked-paste record.
+     * @param reveal - whether the composer should show the original.
+     */
+    function revealDraft(record, reveal) {
+      // The button's own handler AND the document-level release listener can
+      // report the same transition; without this guard the write would run twice
+      // and the second pass would append the restored text instead of replacing it.
+      if (record.swapped === reveal && record.draftState !== 'diverged') return;
+      const swapped = swapDraft(record, reveal);
+      const draftState = swapped ? (reveal ? 'swapped' : 'masked') : 'diverged';
+      if (!swapped) {
+        store.setRecord({ ...record, swapped: false, draftState });
+        return;
+      }
+      store.setRecord({
+        ...record,
+        swapped: reveal,
+        draftState,
+        // A successful swap also proves the masked text did reach the composer.
+        applied: true,
+      });
+    }
+
+    /**
+     * The notice under the composer card: what was masked, hold-to-reveal, undo.
+     * @param props - notice inputs.
+     * @param props.record - the masked-paste record.
+     * @param props.onUndone - marks the record as undone.
+     * @param props.onReveal - writes the original into the composer, or the mask back.
+     * @param props.onDismiss - drops the record.
+     */
+    function MaskNotice({ record, onUndone, onReveal, onDismiss }) {
       const [failure, setFailure] = useState(false);
       const [copied, setCopied] = useState(false);
       const [expiresIn, setExpiresIn] = useState(() => Math.max(0, store.getExpiresAt() - Date.now()));
 
-      const revealing = record.swapped === true;
+      // Reveal state comes from the draft, never from a cached flag.
+      const revealing = record.swapped === true && record.draftState === 'swapped';
       useEffect(() => {
         // A held reveal is an active read: no countdown churn while it is held.
         if (record.undone || revealing) return undefined;
@@ -1435,17 +1486,29 @@ window.__ModuleLoader__.load({
       };
 
       /**
-       * Write one variant into the composer, keeping the record's own state in
-       * step so the countdown and the read-back stay honest.
-       * @param reveal - whether the composer should show the original.
-       * @returns whether the write was refused.
+       * Report the held state to the surface, which owns the composer write.
+       * @param next - whether the composer should show the original.
        */
-      const setRevealed = (reveal) => {
-        if (record.swapped === reveal) return;
-        const applied = swapDraft(record, reveal);
-        onRecordChange({ ...record, swapped: applied ? reveal : false, draftState: 'unknown' });
-        if (!applied && reveal) setFailure(true);
+      const setRevealed = (next) => {
+        onReveal(next);
       };
+
+      // The reveal is ended by exactly ONE path: a document-level release
+      // listener. The button deliberately carries no release handler of its own —
+      // with both, a single pointerup ran the restore twice, and the second pass
+      // appended the text instead of replacing it.
+      useEffect(() => {
+        if (!revealing) return undefined;
+        const release = () => setRevealed(false);
+        document.addEventListener('pointerup', release, true);
+        document.addEventListener('pointercancel', release, true);
+        window.addEventListener('blur', release);
+        return () => {
+          document.removeEventListener('pointerup', release, true);
+          document.removeEventListener('pointercancel', release, true);
+          window.removeEventListener('blur', release);
+        };
+      }, [revealing]);
 
       /** Fallback path when the composer refused the re-issued paste. */
       const copyMasked = () => {
@@ -1481,12 +1544,11 @@ window.__ModuleLoader__.load({
                 title: t('notice.viewHint'),
                 // Press-and-hold, not click: the composer carries the original
                 // only between pointerdown and release, like a revealed password.
-                onPointerDown: (event) => {
-                  event.currentTarget.setPointerCapture?.(event.pointerId);
-                  setRevealed(true);
-                },
-                onPointerUp: () => setRevealed(false),
-                onPointerCancel: () => setRevealed(false),
+                // No release handler and no pointer capture here: the release is
+                // owned by the document listener above (capture swallowed every
+                // press after the first, and a second release handler appended the
+                // restored text instead of replacing it).
+                onPointerDown: () => setRevealed(true),
                 onPointerLeave: () => setRevealed(false),
                 onKeyDown: (event) => {
                   if (event.repeat) return;
@@ -1513,7 +1575,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Keep the overlay just above the composer card.
+     * Keep the overlay just above the composer card, and as wide as it.
      *
      * Measured against the live card instead of being computed at render time:
      * the card appears and moves after the notice mounts, and a stale measurement
@@ -1527,7 +1589,9 @@ window.__ModuleLoader__.load({
         const place = () => {
           const element = ref.current;
           if (element === null) return;
-          element.style.bottom = noticeOffset().bottom;
+          const placement = noticePlacement();
+          element.style.bottom = placement.bottom;
+          if (placement.width !== undefined) element.style.width = placement.width;
         };
         place();
         let observer = null;
@@ -1590,7 +1654,7 @@ window.__ModuleLoader__.load({
         h(Boundary, null, h(MaskNotice, {
           record,
           onUndone: () => store.setRecord({ ...record, undone: true, swapped: false }),
-          onRecordChange: (next) => store.setRecord(next),
+          onReveal: (reveal) => revealDraft(record, reveal),
           onDismiss: () => store.setRecord(null),
         })),
       );
