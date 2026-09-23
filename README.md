@@ -56,6 +56,16 @@
 - 设置项（开关、替换方式、规则开关、自定义正则）保存在浏览器 `localStorage` 的 `dsh.data-mask.settings.v1` 下。
 - 已知局限：正则脱敏不是万无一失的 DLP。规则会随使用继续补充，重要的密钥请不要依赖任何客户端工具。
 
+## 发布与收录
+
+仓库需要打上 **`dsh-plugin`** topic 才会被 DSH 的插件列表收录（GitHub 仓库页右上角 ⚙ → Topics，或用命令行）：
+
+```powershell
+gh api --method PUT repos/<owner>/<repo>/topics -f "names[]=dsh-plugin"
+# 当前仓库已打：dsh-plugin, deepseek-harness, dsh, cordis, data-masking, privacy
+gh api repos/<owner>/<repo>/topics     # 核对
+```
+
 ## 安装与开发
 
 ```powershell
