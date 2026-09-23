@@ -30,12 +30,40 @@ test('the generated engine region carries the whole engine', () => {
   }
 });
 
-test('the Client bundle requires nothing but the module-table seeds', () => {
+test('the Client bundle requires only module-table seed words', () => {
   // A package subpath is NOT resolvable in the browser module table, and a
   // failed require rejects the import and fails the web boot gate (verified in
-  // a real browser with scripts/check-web-boot.mjs).
+  // a real browser with scripts/check-web-boot.mjs). Only platform seed words
+  // may be required, and each optional one must be guarded.
   const required = [...client.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((match) => match[2]);
-  assert.deepEqual(required, ['react']);
+  assert.deepEqual(required, ['react', '@deepseek-ai/dsh-client-ui-primitives']);
+  // The primitives are optional: their require sits in a try/catch with a
+  // native-control fallback.
+  assert.match(client, /try \{\s*\n\s*Field = require\('@deepseek-ai\/dsh-client-ui-primitives'\)/);
+  assert.match(client, /Field\?\.Switch \?\? NativeCheckbox/);
+  // The shell Checkbox renders its label text, which would duplicate the rule name.
+  assert.match(client, /function RuleToggle\(props\) \{\s*\n\s*const Component = Field\?\.Switch \?\? NativeCheckbox;/);
+});
+
+test('the settings surface is the shell Settings panel, not a plugin panel', () => {
+  // The requirement: settings live in 设置 (the sidebar foot), so the plugin
+  // registers a `settings.section` page and ships no floating panel of its own.
+  assert.match(client, /ctx\.slots\.inject\('settings\.section'/);
+  assert.match(client, /name: 'settings\.section'/);
+  assert.match(client, /label: \(\) => t\('nav\.label'\)/);
+  assert.doesNotMatch(client, /dsh-data-mask-panel/);
+  assert.doesNotMatch(client, /dsh-data-mask-chip/);
+});
+
+test('the settings page uses the shell type scale and theme tokens', () => {
+  // 14/20 titles, 12/18 descriptions and 16px rows are the shipped settings-row
+  // metrics; colors must come from theme tokens so the page follows the active
+  // theme instead of inventing a palette of its own.
+  assert.match(client, /\.dsh-data-mask-title \{ font-size: 14px; line-height: 20px; color: var\(--dsw-alias-label-primary\)/);
+  assert.match(client, /\.dsh-data-mask-description \{ margin-top: 4px; font-size: 12px; line-height: 18px; color: var\(--dsw-alias-label-secondary\)/);
+  assert.match(client, /\.dsh-data-mask-row \{[^}]*padding: 16px 0;[^}]*border-bottom: \.5px solid var\(--dsw-alias-border-l2\)/);
+  const hardcoded = [...client.matchAll(/color:\s*(#[0-9A-Fa-f]{3,8}|rgba?\([^)]*\))/g)].map((match) => match[1]);
+  assert.deepEqual(hardcoded, [], `hardcoded colors found: ${hardcoded.join(', ')}`);
 });
 
 test('the package ships no module-table subpath artifact', () => {
@@ -70,12 +98,41 @@ test('every ctx interaction in apply() is guarded', () => {
   assert.ok(apply.length > 0, 'apply() not found');
   const guards = [...apply.matchAll(/try \{/g)].length;
   assert.ok(guards >= 4, `apply() has only ${String(guards)} guards`);
+  // Comments mention these calls too, so judge the code lines only.
+  const code = apply
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n');
   for (const call of ['ctx.effect', 'ctx.slots.inject']) {
-    const at = apply.indexOf(call);
+    const at = code.indexOf(call);
     assert.ok(at !== -1, `${call} not found in apply()`);
     assert.ok(
-      apply.lastIndexOf('try {', at) > apply.lastIndexOf('} catch', at),
+      code.lastIndexOf('try {', at) > code.lastIndexOf('} catch', at),
       `${call} is not inside a try block`,
     );
+  }
+});
+
+test('ctx.effect callbacks return a disposer instead of being side effects', () => {
+  // `ctx.effect(cb)` registers cb's RETURN VALUE as the disposer: passing an
+  // already-invoked call would install the resource and immediately remove it
+  // again. This is exactly how the stylesheet went missing in the browser.
+  assert.match(client, /ctx\.effect\(installStyles, 'data-mask: stylesheet'\)/);
+  assert.doesNotMatch(client, /ctx\.effect\(installStyles\(\)/);
+  assert.match(client, /ctx\.effect\(\(\) => locale\.register\(NS, DICTIONARIES\), 'data-mask: dictionaries'\)/);
+  assert.match(client, /ctx\.effect\(\(\) => attachPasteInterceptor\(\), 'data-mask: paste interceptor'\)/);
+});
+
+test('the section follows the shipped row metrics', () => {
+  // Verified in a real browser as computed styles, so the page cannot silently
+  // lose its stylesheet and fall back to unstyled markup.
+  const rules = client.slice(client.indexOf('const STYLE_TEXT = `'));
+  for (const expectation of [
+    /\.dsh-data-mask-row \{[^}]*padding: 16px 0;/,
+    /border-bottom: \.5px solid var\(--dsw-alias-border-l2\)/,
+    /\.dsh-data-mask-title \{ font-size: 14px; line-height: 20px;/,
+    /\.dsh-data-mask-description \{ margin-top: 4px; font-size: 12px; line-height: 18px;/,
+  ]) {
+    assert.match(rules, expectation);
   }
 });

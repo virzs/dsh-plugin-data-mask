@@ -130,12 +130,12 @@ const mounted = await evaluate(`Boolean(document.querySelector('[data-dsh-boot]'
 record('app mounted (no boot failure screen)', await evaluate(`!document.body.innerText.includes('Failed to load plugins')`));
 record('boot overlay removed', await evaluate(`document.querySelector('[data-dsh-boot]') === null`));
 
-// 2. The dock chip is rendered by this plugin.
+// 2. No chip: the plugin's configuration lives in the shell's Settings panel.
 const chip = await evaluate(`(() => {
   const el = document.querySelector('.dsh-data-mask-chip');
   return el === null ? null : el.textContent;
 })()`);
-record('status chip rendered', chip === null ? false : `"${chip}"`);
+record('no floating chip in the composer area', chip === null ? true : `"${chip}"`);
 
 // 3. A paste into the composer comes out masked.
 const paste = await evaluate(`(async () => {
@@ -215,23 +215,6 @@ if (typeof undo === 'object') {
   record('undo confirmed in the notice', String(undo.notice).includes('已撤销') ? `"${undo.notice}"` : `"${String(undo.notice)}"`);
 } else {
   record('undo', undo);
-}
-
-// 7. The settings panel opens with its rule list.
-const panel = await evaluate(`(async () => {
-  const chip = document.querySelector('.dsh-data-mask-chip');
-  if (chip === null) return 'no chip';
-  chip.click();
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  const panel = document.querySelector('.dsh-data-mask-panel');
-  if (panel === null) return 'no panel';
-  return { rules: panel.querySelectorAll('.dsh-data-mask-rule').length, modes: panel.querySelectorAll('.dsh-data-mask-modes input').length, output: panel.querySelector('.dsh-data-mask-output')?.textContent ?? '' };
-})()`);
-if (typeof panel === 'object') {
-  record('settings panel opened', `rules=${String(panel.rules)} modes=${String(panel.modes)}`);
-  record('preview sample is masked', panel.output.includes('[手机号') ? `"${panel.output.slice(0, 80)}"` : false);
-} else {
-  record('settings panel', panel);
 }
 
 console.log(results.join('\n'));

@@ -12,14 +12,14 @@
  * 2. A notice under the composer card that names what was masked and offers
  *    **按住查看原文** (the original is shown only while the button is held, like
  *    a password field's reveal) and **撤销** (puts the original text back).
- * 3. A chip that opens the settings panel: master switch, mask style, per-rule
- *    toggles, custom-rule editor, and a live preview.
+ * 3. A settings page inside the shell's own Settings panel (`settings.section`),
+ *    reached from the sidebar foot: master switch, mask style, per-rule toggles,
+ *    a custom-rule editor, and a live preview.
  *
  * Failure containment is deliberate. This bundle runs at web boot, and the boot
  * gate refuses to start the GUI when an entry does not reach `active`, so:
- * `inject` names only `slots`, every `ctx` call is wrapped, the UI is feature
- * detected, and React children are wrapped in an error boundary. The worst case
- * is a missing chip — never a blocked page.
+ * `inject` names only `slots`, every `ctx` call is wrapped, every optional
+ * module is feature detected, and React children sit behind an error boundary.
  *
  * The masking engine below is generated from `engine.js` by
  * `scripts/build-client.mjs` and inlined on purpose: the browser module table
@@ -37,6 +37,18 @@ window.__ModuleLoader__.load({
     const {
       useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
     } = React;
+
+    /**
+     * Shell primitives (`Switch`, `Checkbox`, `SegmentedControl`, …), so the
+     * settings page uses the same controls as a built-in section. Optional: the
+     * page falls back to native controls when the module is unavailable.
+     */
+    let Field = null;
+    try {
+      Field = require('@deepseek-ai/dsh-client-ui-primitives');
+    } catch (error) {
+      console.warn('[data-mask] shell primitives are unavailable, falling back to native controls:', error);
+    }
 
     // #region generated engine (scripts/build-client.mjs)
     const MODES = ['label', 'partial', 'redact'];
@@ -469,9 +481,6 @@ window.__ModuleLoader__.load({
     const NS = 'data-mask';
     /** How long a masked paste stays undoable (and its original in memory). */
     const RECORD_TTL_MS = 10 * 60 * 1000;
-    /** Panel geometry. */
-    const PANEL_WIDTH = 372;
-    const PANEL_GAP = 10;
     /** The editable selector used to recognize a composer field. */
     const EDITABLE_SELECTOR = '[contenteditable=""],[contenteditable="true"],textarea,input';
     /** Placeholder editors carry, which must not be mistaken for draft text. */
@@ -479,28 +488,34 @@ window.__ModuleLoader__.load({
 
     const DICTIONARIES = {
       zh: {
-        'chip.on': '脱敏中',
-        'chip.off': '脱敏已关',
-        'chip.last': '脱敏 {count} 处',
-        'panel.title': '粘贴脱敏',
-        'panel.subtitle': '拦截粘贴到输入框的内容，先替换敏感信息再放入草稿，原文不会发送给模型。',
-        'panel.enabled': '启用粘贴脱敏',
-        'panel.mode': '替换方式',
-        'mode.label': '整体替换（最安全）',
-        'mode.partial': '部分掩码（保留可读）',
-        'mode.redact': '星号覆盖',
-        'panel.rules': '识别规则',
-        'panel.rulesHint': '关闭的规则不参与替换。',
-        'panel.custom': '自定义规则',
-        'panel.customHint': '每行一条：/正则/标志 => 替换文本，例如 /EMP-\\d{6}/ => [工号]；# 开头的行会被忽略。',
-        'panel.test': '试一下',
-        'panel.testHint': '输入或粘贴样例，立即查看替换结果。',
-        'panel.testEmpty': '未命中任何敏感信息',
-        'panel.testHits': '命中 {count} 处：{list}',
-        'panel.clear': '关闭',
-        'panel.invalid': '第 {line} 行正则无效：{reason}',
-        'panel.lastNone': '还没有拦截到粘贴记录。',
-        'panel.last': '最近一次：脱敏 {count} 处（{list}）',
+        'nav.label': '数据脱敏',
+        'page.description': '粘贴到输入框时先替换敏感信息，再把脱敏文本放进草稿；原文不会被发送给模型。',
+        'enabled.label': '启用粘贴脱敏',
+        'enabled.description': '关闭后粘贴不再改写，已经进入草稿的文本不受影响。',
+        'mode.label': '替换方式',
+        'mode.description': '决定命中敏感信息后写入草稿的形态。',
+        'mode.option.label': '整体替换',
+        'mode.option.partial': '部分掩码',
+        'mode.option.redact': '星号覆盖',
+        'mode.hint.label': '写成 [手机号/固话] 这样的类型标签，最安全。',
+        'mode.hint.partial': '保留头尾便于辨认，例如 138****5678；隐藏部分定长，不泄露原长度。',
+        'mode.hint.redact': '用定长星号覆盖，连长度也不暴露。',
+        'rules.label': '识别规则',
+        'rules.description': '关闭的规则不参与替换，其余规则不受影响。',
+        'rules.on': '已启用 {count} 条规则',
+        'custom.label': '自定义规则',
+        'custom.description': '每行一条：/正则/标志 => 替换文本，例如 /EMP-\\d{6}/ => [工号]；# 开头的行会被忽略。',
+        'custom.placeholder': '/EMP-\\d{6}/ => [工号]',
+        'custom.count': '已生效 {count} 条',
+        'custom.invalid': '第 {line} 行正则无效：{reason}',
+        'test.label': '试一下',
+        'test.description': '输入或粘贴样例，立即查看替换结果。',
+        'test.placeholder': '粘贴一段含敏感信息的文本',
+        'test.output': '替换结果',
+        'test.empty': '未命中任何敏感信息',
+        'test.hits': '命中 {count} 处：{list}',
+        'last.label': '最近一次粘贴：脱敏 {count} 处',
+        'last.none': '还没有拦截到粘贴记录',
         'notice.title': '已脱敏 {count} 处',
         'notice.titleWithPreview': '已脱敏 {count} 处：{preview}',
         'notice.view': '按住查看原文',
@@ -517,28 +532,34 @@ window.__ModuleLoader__.load({
         'notice.close': '关闭提示',
       },
       en: {
-        'chip.on': 'Masking on',
-        'chip.off': 'Masking off',
-        'chip.last': 'Masked {count}',
-        'panel.title': 'Paste masking',
-        'panel.subtitle': 'Intercepts what you paste into the composer, replaces sensitive values, and only then puts the draft in place. The original never reaches the model.',
-        'panel.enabled': 'Enable paste masking',
-        'panel.mode': 'Replacement style',
-        'mode.label': 'Whole value label (safest)',
-        'mode.partial': 'Partial mask (stays readable)',
-        'mode.redact': 'Asterisks',
-        'panel.rules': 'Detection rules',
-        'panel.rulesHint': 'A disabled rule never replaces anything.',
-        'panel.custom': 'Custom rules',
-        'panel.customHint': 'One rule per line: /pattern/flags => replacement, e.g. /EMP-\\d{6}/ => [staff id]. Lines starting with # are ignored.',
-        'panel.test': 'Try it',
-        'panel.testHint': 'Type or paste a sample to see the result immediately.',
-        'panel.testEmpty': 'No sensitive value matched',
-        'panel.testHits': '{count} matched: {list}',
-        'panel.clear': 'Close',
-        'panel.invalid': 'Line {line} is not a valid pattern: {reason}',
-        'panel.lastNone': 'No paste intercepted yet.',
-        'panel.last': 'Last paste: {count} masked ({list})',
+        'nav.label': 'Data mask',
+        'page.description': 'Replaces sensitive values before a paste reaches the composer. The original never reaches the model.',
+        'enabled.label': 'Mask on paste',
+        'enabled.description': 'When off, pasting is left untouched; text already in the draft is unaffected.',
+        'mode.label': 'Replacement style',
+        'mode.description': 'What a matched value turns into in the draft.',
+        'mode.option.label': 'Type label',
+        'mode.option.partial': 'Partial mask',
+        'mode.option.redact': 'Redact',
+        'mode.hint.label': 'Writes a label such as [phone]; safest.',
+        'mode.hint.partial': 'Keeps a readable head and tail, e.g. 138****5678; the hidden run is fixed width, so the original length never leaks.',
+        'mode.hint.redact': 'A fixed-width asterisk run: even the length stays hidden.',
+        'rules.label': 'Detection rules',
+        'rules.description': 'A disabled rule never replaces anything; the others are unaffected.',
+        'rules.on': '{count} rules enabled',
+        'custom.label': 'Custom rules',
+        'custom.description': 'One rule per line: /pattern/flags => replacement, e.g. /EMP-\\d{6}/ => [staff id]. Lines starting with # are ignored.',
+        'custom.placeholder': '/EMP-\\d{6}/ => [staff id]',
+        'custom.count': '{count} active',
+        'custom.invalid': 'Line {line} is not a valid pattern: {reason}',
+        'test.label': 'Try it',
+        'test.description': 'Type or paste a sample to see the result immediately.',
+        'test.placeholder': 'Paste text containing sensitive values',
+        'test.output': 'Result',
+        'test.empty': 'No sensitive value matched',
+        'test.hits': '{count} matched: {list}',
+        'last.label': 'Last paste: {count} masked',
+        'last.none': 'No paste intercepted yet',
         'notice.title': 'Masked {count} value(s)',
         'notice.titleWithPreview': 'Masked {count}: {preview}',
         'notice.view': 'Hold to reveal',
@@ -574,13 +595,21 @@ window.__ModuleLoader__.load({
       return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
     }
 
-    /** @returns the dictionary for the language the shell is showing. */
+    /**
+     * The language the shell is showing.
+     *
+     * `document.documentElement.lang` is the shell-owned signal (the locale
+     * plugin keeps it in sync) and works without the locale service; a stored
+     * preference is only a fallback.
+     * @returns the dictionary for that language.
+     */
     function activeDictionary() {
       try {
-        const stored = window.localStorage.getItem('dsh.locale') ?? window.localStorage.getItem('dsh.locale.v1') ?? '';
-        if (/^en\b/i.test(stored)) return DICTIONARIES.en;
+        if (typeof document.documentElement.lang === 'string' && /^en\b/i.test(document.documentElement.lang)) {
+          return DICTIONARIES.en;
+        }
       } catch {
-        // Storage is optional; Chinese is the primary language for this plugin.
+        // A missing document means a non-browser context; Chinese is the default.
       }
       return DICTIONARIES.zh;
     }
@@ -875,8 +904,8 @@ window.__ModuleLoader__.load({
      * Put the original text back over the masked draft.
      *
      * The whole draft is rewritten, and only when the draft still equals the
-     * masked text that was inserted — so a chip or an edit the user made since is
-     * never clobbered, and the undo is refused instead.
+     * masked text that was inserted — so a reference chip or an edit the user
+     * made since is never clobbered, and the undo is refused instead.
      *
      * The write reuses the composer's own paste path (the same one the masked
      * insertion uses) rather than `document.execCommand('insertText')`, which is
@@ -888,11 +917,7 @@ window.__ModuleLoader__.load({
     function restoreOriginal(record) {
       const editor = liveEditor(record);
       if (editor === null) return false;
-      if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-        if (editor.disabled || editor.readOnly) return false;
-      } else if (!isContentEditable(editor)) {
-        return false;
-      }
+      if (!isContentEditable(editor)) return false;
       if (editorText(editor) !== record.draft) return false;
       try {
         editor.focus({ preventScroll: true });
@@ -924,32 +949,53 @@ window.__ModuleLoader__.load({
     // #region styles
 
     const STYLE_ID = 'dsh-data-mask-style';
+
+    /**
+     * The plugin's own stylesheet.
+     *
+     * The settings page is expressed with the shell's theme tokens and its
+     * settings type scale (14/20 titles, 12/18 descriptions, 16px row padding,
+     * a half-pixel divider between rows), so it reads as a built-in section
+     * instead of a foreign panel. Controls come from the shell's primitives.
+     */
     const STYLE_TEXT = `
-.dsh-data-mask-dock {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  width: 100%; min-width: 0;
+.dsh-data-mask-section { display: flex; flex-direction: column; width: 100%; }
+.dsh-data-mask-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  padding: 16px 0; border-bottom: .5px solid var(--dsw-alias-border-l2);
 }
-.dsh-data-mask-overlay {
-  position: fixed; left: 50%; transform: translateX(-50%);
-  z-index: 40; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
-  width: min(680px, calc(100vw - 32px)); pointer-events: none;
+.dsh-data-mask-row:last-child { border-bottom: none; }
+.dsh-data-mask-row[data-stacked="true"] { flex-direction: column; align-items: stretch; gap: 10px; }
+.dsh-data-mask-title { font-size: 14px; line-height: 20px; color: var(--dsw-alias-label-primary); }
+.dsh-data-mask-description { margin-top: 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.dsh-data-mask-value { margin-top: 6px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.dsh-data-mask-note { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.dsh-data-mask-rules { display: flex; flex-direction: column; }
+.dsh-data-mask-rule { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; }
+.dsh-data-mask-rule-name { font-size: 13px; line-height: 18px; color: var(--dsw-alias-label-primary); }
+.dsh-data-mask-rule-hint { margin-top: 2px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.dsh-data-mask-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 8px 10px;
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+  font-family: inherit; font-size: 13px; line-height: 20px;
 }
-.dsh-data-mask-overlay:empty { display: none; }
-.dsh-data-mask-overlay > * { pointer-events: auto; max-width: 100%; }
-.dsh-data-mask-chip {
-  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
-  border: 1px solid transparent; border-radius: 999px; padding: 1px 8px;
-  background: none; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.7;
+.dsh-data-mask-input:focus { outline: none; border-color: var(--dsw-alias-brand-primary); }
+.dsh-data-mask-input::placeholder { color: var(--dsw-alias-label-secondary); }
+.dsh-data-mask-input[data-mono="true"] { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dsh-data-mask-preview {
+  margin: 0; padding: 8px 10px; border-radius: 8px; min-height: 36px;
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px; line-height: 20px; white-space: pre-wrap; word-break: break-word;
 }
-.dsh-data-mask-chip:hover { border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
-.dsh-data-mask-chip[data-state="hot"] { color: var(--dsw-alias-state-success-primary); }
-.dsh-data-mask-chip[data-state="off"] { color: var(--dsw-alias-state-idle-primary); }
-.dsh-data-mask-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dsh-data-mask-fallback { width: 16px; height: 16px; accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
+.dsh-data-mask-invalid { margin: 6px 0 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary); }
 .dsh-data-mask-notice {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  margin: 2px 2px 0; padding: 5px 9px;
+  margin: 2px 2px 0; padding: 6px 10px;
   border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px;
-  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 11.5px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 12px;
 }
 .dsh-data-mask-notice[data-tone="warn"] { border-color: var(--dsw-alias-state-warn-primary); }
 .dsh-data-mask-notice-preview {
@@ -959,70 +1005,32 @@ window.__ModuleLoader__.load({
 }
 .dsh-data-mask-notice-preview[data-revealed="true"] { color: var(--dsw-alias-state-warn-primary); }
 .dsh-data-mask-notice button {
-  border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; cursor: pointer;
   background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
-  padding: 1px 8px; font-size: 11.5px; line-height: 1.7;
+  font-family: inherit; padding: 2px 9px; font-size: 12px; line-height: 18px;
 }
-.dsh-data-mask-notice button:hover { border-color: var(--dsw-alias-border-l2); }
+.dsh-data-mask-notice button:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .dsh-data-mask-notice small { color: var(--dsw-alias-label-secondary); }
 .dsh-data-mask-notice-spacer { flex: 1 1 auto; }
-.dsh-data-mask-anchor { position: relative; display: inline-flex; align-items: center; }
-.dsh-data-mask-panel {
-  position: absolute; z-index: 40; box-sizing: border-box;
-  bottom: calc(100% + 8px); left: 0;
-  display: flex; flex-direction: column; gap: 12px; padding: 14px;
-  border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px;
-  background: var(--dsw-alias-bg-overlay); box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
-  color: var(--dsw-alias-label-primary); font-size: 12px; line-height: 1.5;
+.dsh-data-mask-overlay {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  z-index: 40; display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  width: min(680px, calc(100vw - 32px)); pointer-events: none;
 }
-.dsh-data-mask-panel * { box-sizing: border-box; }
-.dsh-data-mask-panel h3 { margin: 0; font-size: 13px; font-weight: 600; }
-.dsh-data-mask-panel p { margin: 0; color: var(--dsw-alias-label-secondary); }
-.dsh-data-mask-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.dsh-data-mask-close {
-  border: 0; background: none; cursor: pointer; padding: 0 2px;
-  color: var(--dsw-alias-label-secondary); font-size: 15px; line-height: 1;
-}
-.dsh-data-mask-close:hover { color: var(--dsw-alias-label-primary); }
-.dsh-data-mask-switch { display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; }
-.dsh-data-mask-switch input { width: 15px; height: 15px; accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
-.dsh-data-mask-modes { display: flex; flex-direction: column; gap: 4px; }
-.dsh-data-mask-modes label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
-.dsh-data-mask-modes input { accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
-.dsh-data-mask-rules {
-  display: flex; flex-direction: column; gap: 3px;
-  max-height: 168px; overflow-y: auto;
-  border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; padding: 7px 8px;
-}
-.dsh-data-mask-rule { display: flex; align-items: baseline; gap: 7px; cursor: pointer; }
-.dsh-data-mask-rule input { accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
-.dsh-data-mask-rule small { color: var(--dsw-alias-label-secondary); }
-.dsh-data-mask-panel textarea {
-  width: 100%; min-height: 62px; resize: vertical;
-  border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; padding: 7px 8px;
-  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
-}
-.dsh-data-mask-panel input[type="text"] {
-  width: 100%; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
-  padding: 7px 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 12px;
-}
-.dsh-data-mask-output {
-  margin: 0; padding: 7px 8px; border-radius: 8px; min-height: 34px;
-  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: pre-wrap; word-break: break-word;
-}
-.dsh-data-mask-hits { color: var(--dsw-alias-state-success-primary); }
-.dsh-data-mask-empty { color: var(--dsw-alias-label-secondary); }
-.dsh-data-mask-bad { color: var(--dsw-alias-state-error-primary); }
-.dsh-data-mask-foot { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); }
+.dsh-data-mask-overlay:empty { display: none; }
+.dsh-data-mask-overlay > * { pointer-events: auto; max-width: 100%; }
 `;
 
     /**
-     * The plugin's stylesheet, inserted once and removed with the plugin.
+     * Insert the plugin's stylesheet and return the cleanup that takes it out.
+     *
+     * NOTE the shape: the cleanup is RETURNED, never invoked. `ctx.effect`
+     * interprets a callback's return value as the disposer, so calling this
+     * function for its side effect inside `ctx.effect` would install the sheet
+     * and immediately remove it again.
+     *
      * Never throws: a stylesheet failure must not reach the boot gate.
-     * @returns the cleanup that takes it out again.
+     * @returns the cleanup that removes the stylesheet.
      */
     function installStyles() {
       try {
@@ -1070,14 +1078,68 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The settings panel.
-     * @param props - panel inputs.
-     * @param props.settings - live settings.
-     * @param props.record - the current masked-paste record, when there is one.
-     * @param props.onChange - applies a settings patch.
-     * @param props.onClose - closes the panel.
+     * Native checkbox standing in for a shell primitive when the primitives
+     * module is unavailable, so the page still works without it.
+     * @param props - checked state, label, and the change callback.
      */
-    function MaskPanel({ settings, record, onChange, onClose }) {
+    function NativeCheckbox({ checked, onChange, label, disabled }) {
+      return h('input', {
+        type: 'checkbox',
+        className: 'dsh-data-mask-fallback',
+        checked,
+        disabled,
+        'aria-label': label,
+        onChange: (event) => onChange(event.target.checked),
+      });
+    }
+
+    /** @returns the shell `Switch`, or the native fallback. */
+    function Toggle(props) {
+      const Component = Field?.Switch ?? NativeCheckbox;
+      return h(Component, props);
+    }
+
+    /**
+     * One rule's on/off control.
+     *
+     * The shell's `Checkbox` always renders its `label` text beside the box,
+     * which would repeat the rule name already shown on the left; the shell uses
+     * `Switch` for exactly this kind of labelled preference row, so rules use it
+     * too.
+     * @param props - checked state, accessible label, and the change callback.
+     */
+    function RuleToggle(props) {
+      const Component = Field?.Switch ?? NativeCheckbox;
+      return h(Component, props);
+    }
+
+    /**
+     * One settings row: the label column on the left, the control on the right.
+     * @param props - row content.
+     */
+    function Row({ title, description, children }) {
+      return h(
+        'div',
+        { className: 'dsh-data-mask-row' },
+        h(
+          'div',
+          null,
+          h('div', { className: 'dsh-data-mask-title' }, title),
+          description === undefined ? null : h('div', { className: 'dsh-data-mask-description' }, description),
+        ),
+        children,
+      );
+    }
+
+    /**
+     * The settings page registered into the shell's Settings panel.
+     *
+     * It follows the shipped sections: a full-width column of divided rows, with
+     * the shell's own controls, and its own copy for the values it owns.
+     */
+    function SettingsPage() {
+      const settings = useSyncExternalStore(store.subscribe, store.getSettings, store.getSettings);
+      const record = useSyncExternalStore(store.subscribe, store.getRecord, store.getRecord);
       const [sample, setSample] = useState('张三 13812345678 zhangsan@example.com 卡号 4111111111111111');
       const parsed = useMemo(() => parseCustomRules(settings.custom), [settings.custom]);
       const preview = useMemo(
@@ -1089,6 +1151,9 @@ window.__ModuleLoader__.load({
         }),
         [sample, settings.mode, settings.rules, parsed.rules],
       );
+      const enabledRules = RULES.filter((rule) => settings.rules[rule.id]?.enabled ?? rule.enabled !== false).length;
+      const ModeControl = Field?.SegmentedControl;
+      const modeOptions = MODES.map((mode) => ({ value: mode, label: t(`mode.option.${mode}`) }));
 
       /**
        * Merge one built-in rule override.
@@ -1096,116 +1161,131 @@ window.__ModuleLoader__.load({
        * @param patch - the fields to change.
        */
       const setRule = (id, patch) => {
-        onChange({ rules: { [id]: { ...(settings.rules[id] ?? {}), ...patch } } });
+        store.update({ rules: { [id]: { ...(settings.rules[id] ?? {}), ...patch } } });
       };
 
       return h(
         'div',
-        { className: 'dsh-data-mask-panel', style: { width: PANEL_WIDTH }, role: 'dialog', 'aria-label': t('panel.title') },
-        h(
-          'div',
-          { className: 'dsh-data-mask-head' },
-          h('div', null, h('h3', null, t('panel.title')), h('p', null, t('panel.subtitle'))),
-          h('button', { type: 'button', className: 'dsh-data-mask-close', onClick: onClose, 'aria-label': t('panel.clear') }, '✕'),
-        ),
-        h(
-          'label',
-          { className: 'dsh-data-mask-switch' },
-          h('input', {
-            type: 'checkbox',
+        { className: 'dsh-data-mask-section' },
+        h(Row, {
+          title: t('enabled.label'),
+          description: t('enabled.description'),
+          children: h(Toggle, {
             checked: settings.enabled,
-            onChange: (event) => onChange({ enabled: event.target.checked }),
+            label: t('enabled.label'),
+            onChange: (next) => store.update({ enabled: next }),
           }),
-          t('panel.enabled'),
-        ),
+        }),
+        h(Row, {
+          title: t('mode.label'),
+          description: t(`mode.hint.${settings.mode}`),
+          children: ModeControl === undefined
+            ? h(
+              'select',
+              {
+                value: settings.mode,
+                'aria-label': t('mode.label'),
+                onChange: (event) => store.update({ mode: event.target.value }),
+                style: { font: 'inherit', fontSize: 13, padding: '4px 8px' },
+              },
+              modeOptions.map((option) => h('option', { key: option.value, value: option.value }, option.label)),
+            )
+            : h(ModeControl, {
+              id: 'data-mask-mode',
+              value: settings.mode,
+              options: modeOptions,
+              label: t('mode.label'),
+              onChange: (next) => store.update({ mode: next }),
+            }),
+        }),
         h(
           'div',
-          null,
-          h('p', null, t('panel.mode')),
+          { className: 'dsh-data-mask-row', 'data-stacked': 'true' },
           h(
             'div',
-            { className: 'dsh-data-mask-modes' },
-            MODES.map((mode) => h(
-              'label',
-              { key: mode },
-              h('input', {
-                type: 'radio',
-                name: 'dsh-data-mask-mode',
-                checked: settings.mode === mode,
-                onChange: () => onChange({ mode }),
-              }),
-              t(`mode.${mode}`),
-            )),
+            null,
+            h('div', { className: 'dsh-data-mask-title' }, t('rules.label')),
+            h('div', { className: 'dsh-data-mask-description' }, t('rules.description')),
+            h('div', { className: 'dsh-data-mask-value' }, t('rules.on', { count: enabledRules })),
           ),
-        ),
-        h(
-          'div',
-          null,
-          h('p', null, t('panel.rules'), ' · ', h('small', null, t('panel.rulesHint'))),
           h(
             'div',
             { className: 'dsh-data-mask-rules' },
             RULES.map((rule) => {
-              const enabled = settings.rules[rule.id]?.enabled ?? rule.enabled !== false;
+              const ruleEnabled = settings.rules[rule.id]?.enabled ?? rule.enabled !== false;
               return h(
-                'label',
+                'div',
                 { key: rule.id, className: 'dsh-data-mask-rule' },
-                h('input', {
-                  type: 'checkbox',
-                  checked: enabled,
-                  onChange: (event) => setRule(rule.id, { enabled: event.target.checked }),
+                h(
+                  'div',
+                  null,
+                  h('div', { className: 'dsh-data-mask-rule-name' }, rule.label),
+                  h('div', { className: 'dsh-data-mask-rule-hint' }, rule.hint),
+                ),
+                h(RuleToggle, {
+                  checked: ruleEnabled,
+                  label: rule.label,
+                  onChange: (next) => setRule(rule.id, { enabled: next }),
                 }),
-                h('span', null, rule.label),
-                h('small', null, rule.hint),
               );
             }),
           ),
         ),
         h(
           'div',
-          null,
-          h('p', null, t('panel.custom')),
+          { className: 'dsh-data-mask-row', 'data-stacked': 'true' },
+          h(
+            'div',
+            null,
+            h('div', { className: 'dsh-data-mask-title' }, t('custom.label')),
+            h('div', { className: 'dsh-data-mask-description' }, t('custom.description')),
+            parsed.bad.length === 0
+              ? null
+              : parsed.bad.map((problem) => h(
+                'p',
+                { key: problem.line, className: 'dsh-data-mask-invalid' },
+                t('custom.invalid', { line: problem.line, reason: problem.reason }),
+              )),
+          ),
           h('textarea', {
-            value: settings.custom,
+            className: 'dsh-data-mask-input',
+            'data-mono': 'true',
             spellCheck: false,
-            'aria-label': t('panel.custom'),
-            onChange: (event) => onChange({ custom: event.target.value }),
+            value: settings.custom,
+            placeholder: t('custom.placeholder'),
+            'aria-label': t('custom.label'),
+            onChange: (event) => store.update({ custom: event.target.value }),
           }),
-          h('p', null, h('small', null, t('panel.customHint'))),
-          parsed.bad.map((problem) => h(
-            'p',
-            { key: problem.line, className: 'dsh-data-mask-bad' },
-            t('panel.invalid', { line: problem.line, reason: problem.reason }),
-          )),
+          h('div', { className: 'dsh-data-mask-note' }, t('custom.count', { count: parsed.rules.length })),
         ),
         h(
           'div',
-          null,
-          h('p', null, t('panel.test'), ' · ', h('small', null, t('panel.testHint'))),
-          h('input', {
-            type: 'text',
-            value: sample,
+          { className: 'dsh-data-mask-row', 'data-stacked': 'true' },
+          h(
+            'div',
+            null,
+            h('div', { className: 'dsh-data-mask-title' }, t('test.label')),
+            h('div', { className: 'dsh-data-mask-description' }, t('test.description')),
+          ),
+          h('textarea', {
+            className: 'dsh-data-mask-input',
             spellCheck: false,
-            'aria-label': t('panel.test'),
+            value: sample,
+            placeholder: t('test.placeholder'),
+            'aria-label': t('test.label'),
             onChange: (event) => setSample(event.target.value),
           }),
-          h('p', { className: 'dsh-data-mask-output' }, preview.text === '' ? ' ' : preview.text),
+          h('div', { className: 'dsh-data-mask-note' }, t('test.output')),
+          h('p', { className: 'dsh-data-mask-preview' }, preview.text === '' ? ' ' : preview.text),
           preview.total === 0
-            ? h('p', { className: 'dsh-data-mask-empty' }, t('panel.testEmpty'))
-            : h('p', { className: 'dsh-data-mask-hits' }, t('panel.testHits', {
+            ? h('div', { className: 'dsh-data-mask-note' }, t('test.empty'))
+            : h('div', { className: 'dsh-data-mask-value' }, t('test.hits', {
               count: preview.total,
               list: preview.hits.map((hit) => `${hit.label}×${hit.count}`).join('、'),
             })),
-        ),
-        h(
-          'div',
-          { className: 'dsh-data-mask-foot' },
-          record === null
-            ? h('span', null, t('panel.lastNone'))
-            : h('span', null, t('panel.last', {
-              count: record.total,
-              list: record.hits.map((hit) => `${hit.label}×${hit.count}`).join('、'),
-            })),
+          h('div', { className: 'dsh-data-mask-note' }, record === null
+            ? t('last.none')
+            : t('last.label', { count: record.total })),
         ),
       );
     }
@@ -1293,11 +1373,7 @@ window.__ModuleLoader__.load({
             ),
             unwritten
               ? h('button', { type: 'button', onClick: copyMasked }, copied ? t('notice.copied') : t('notice.copy'))
-              : h(
-                'button',
-                { type: 'button', title: t('notice.undoHint'), onClick: undo },
-                t('notice.undo'),
-              ),
+              : h('button', { type: 'button', title: t('notice.undoHint'), onClick: undo }, t('notice.undo')),
           ),
         failure ? h('small', null, t('notice.failed')) : null,
         unwritten && !record.undone ? h('small', null, t('notice.notApplied')) : null,
@@ -1311,158 +1387,79 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One rendered surface of the plugin.
+     * Where to park the notice: just below the composer card.
      *
-     * `conversation.composer.dock` is session-scoped and `shell.overlay` is
-     * root-scoped, so both are registered: the dock carries the status chip
-     * beside the composer, and the overlay keeps the masked-paste notice — and
-     * therefore 按住查看原文 / 撤销 — available on the start screen too, where no
-     * Session (and so no dock) exists yet.
-     *
-     * @param props - surface props.
-     * @param props.surface - `'dock'` renders chip + notice, `'overlay'` the notice only.
+     * The editable field is not the card — the card adds the tool row and padding
+     * above it — so the anchor is the outermost ancestor that is no wider than
+     * the scrollport, which is the card itself. Falls back to the field, then to
+     * a fixed offset, so a layout change only costs precision.
+     * @returns inline positioning for the overlay.
      */
-    function MaskSurface({ surface }) {
-      const settings = useSyncExternalStore(store.subscribe, store.getSettings, store.getSettings);
-      const record = useSyncExternalStore(store.subscribe, store.getRecord, store.getRecord);
-      const [panelOpen, setPanelOpen] = useState(false);
-      const anchorRef = useRef(null);
-
-      const close = useCallback(() => setPanelOpen(false), []);
-
-      // Expire the undo window even while the user never touches the panel.
-      useEffect(() => {
-        const timer = window.setInterval(() => store.sweep(), 15000);
-        return () => window.clearInterval(timer);
-      }, []);
-
-      useEffect(() => {
-        if (!panelOpen) return undefined;
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') close();
-        };
-        const onPointerDown = (event) => {
-          if (anchorRef.current !== null && !anchorRef.current.contains(event.target)) close();
-        };
-        document.addEventListener('keydown', onKeyDown);
-        document.addEventListener('pointerdown', onPointerDown, true);
-        return () => {
-          document.removeEventListener('keydown', onKeyDown);
-          document.removeEventListener('pointerdown', onPointerDown, true);
-        };
-      }, [panelOpen, close]);
-
-      const dock = surface === 'dock';
-      const masked = record?.total ?? 0;
-      const state = !settings.enabled ? 'off' : masked > 0 ? 'hot' : 'idle';
-      const label = !settings.enabled
-        ? t('chip.off')
-        : masked > 0 ? t('chip.last', { count: masked }) : t('chip.on');
-
-      const chip = h(
-        'div',
-        { className: 'dsh-data-mask-anchor', ref: anchorRef },
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'dsh-data-mask-chip',
-            'data-state': state,
-            title: t('panel.title'),
-            onClick: () => setPanelOpen((open) => !open),
-          },
-          h('span', { className: 'dsh-data-mask-dot', 'aria-hidden': true }),
-          label,
-        ),
-        panelOpen
-          ? h(Boundary, null, h(MaskPanel, {
-            settings,
-            record,
-            onChange: store.update,
-            onClose: close,
-          }))
-          : null,
-      );
-
-      const notice = record === null
-        ? null
-        : h(Boundary, null, h(MaskNotice, {
-          record,
-          onUndone: () => store.setRecord({ ...record, undone: true }),
-          onDismiss: () => store.setRecord(null),
-        }));
-
-      // Without a Session the dock slot is absent, so the overlay draws the chip
-      // itself and parks itself just under the composer card.
-      if (!dock) {
-        return h(
-          'div',
-          { className: 'dsh-data-mask-overlay', ref: anchorRef, style: overlayOffset(record !== null) },
-          chip,
-          notice,
-        );
-      }
-
-      return h(
-        'div',
-        { className: 'dsh-data-mask-dock' },
-        notice,
-        chip,
-      );
-    }
-
-    /** The composer-dock surface: status chip plus the masked-paste notice. */
-    function MaskDockEntry() {
-      return h(MaskSurface, { surface: 'dock' });
-    }
-
-    /** The root-scoped surface: chip plus notice, for screens without a dock. */
-    function MaskOverlayEntry() {
-      return h(MaskSurface, { surface: 'overlay' });
-    }
-
-    /**
-     * Park the overlay just below the composer card, so the notice and the chip
-     * sit where the session-scoped dock would be. Falls back to a fixed offset
-     * while no composer is on screen, and re-measures on every render.
-     * @param withNotice - whether the notice row is present, which sets the gap.
-     * @returns inline positioning, or an empty object when nothing was measured.
-     */
-    function overlayOffset(withNotice) {
+    function noticeOffset() {
       try {
-        const composer = document.querySelector('[data-composer-input]')
+        const field = document.querySelector('[data-composer-input]')
           ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
-        if (composer === null) return { bottom: '18px' };
-        const rect = composer.getBoundingClientRect();
-        const bottom = Math.max(12, window.innerHeight - rect.bottom + 10);
-        return { bottom: `${String(Math.round(bottom + (withNotice ? 34 : 0)))}px` };
+        if (field === null) return { bottom: '18px' };
+        let anchor = field;
+        for (let node = field.parentElement; node !== null && node !== document.body; node = node.parentElement) {
+          const style = window.getComputedStyle(node);
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
+          if (style.display === 'flex' || style.display === 'block') anchor = node;
+        }
+        const rect = anchor.getBoundingClientRect();
+        return { bottom: `${String(Math.round(Math.max(12, window.innerHeight - rect.bottom + 8)))}px` };
       } catch {
         return { bottom: '18px' };
       }
     }
 
+    /**
+     * Root-scoped surface: the masked-paste notice.
+     *
+     * The composer dock is session-scoped, so on the start screen this overlay is
+     * the only place the notice — and therefore 按住查看原文 / 撤销 — can appear.
+     * Configuration lives in the shell's Settings panel, not here.
+     */
+    function MaskNoticeSurface() {
+      const record = useSyncExternalStore(store.subscribe, store.getRecord, store.getRecord);
+
+      // Expire the undo window even while the notice is never touched.
+      useEffect(() => {
+        const timer = window.setInterval(() => store.sweep(), 15000);
+        return () => window.clearInterval(timer);
+      }, []);
+
+      if (record === null) return null;
+      return h(
+        'div',
+        { className: 'dsh-data-mask-overlay', style: noticeOffset() },
+        h(Boundary, null, h(MaskNotice, {
+          record,
+          onUndone: () => store.setRecord({ ...record, undone: true }),
+          onDismiss: () => store.setRecord(null),
+        })),
+      );
+    }
+
     // #endregion
 
     return {
-      // Only `slots` is required. `locale` is consumed opportunistically in
-      // `apply`, because a required-but-missing service parks the fiber and the
-      // boot gate then refuses to start the GUI.
+      // Only `slots` is required. A required-but-missing service parks the fiber
+      // and the boot gate then refuses to start the GUI, so the locale service
+      // is read through `ctx.get`, which needs no declaration.
       inject: ['slots'],
       /**
-       * Client plugin body: styles, dictionaries, the paste interceptor, and the
-       * composer-dock entry. Every step is isolated so a failure degrades the
-       * feature instead of failing activation.
+       * Client plugin body: styles, dictionaries, the paste interceptor, the
+       * notice surface, and the Settings page. Every step is isolated so a
+       * failure degrades the feature instead of failing activation.
        * @param ctx - Client cordis context.
        */
       apply(ctx) {
-        let styles = () => {};
+        // `ctx.effect(callback)` registers the callback's RETURN VALUE as the
+        // disposer, so the callback must hand back the cleanup rather than run
+        // the side effect itself.
         try {
-          styles = installStyles();
-        } catch (error) {
-          console.warn('[data-mask] stylesheet step failed:', error);
-        }
-        try {
-          ctx.effect(styles, 'data-mask: stylesheet');
+          ctx.effect(installStyles, 'data-mask: stylesheet');
         } catch (error) {
           console.warn('[data-mask] stylesheet effect failed:', error);
         }
@@ -1485,26 +1482,31 @@ window.__ModuleLoader__.load({
           console.warn('[data-mask] paste interceptor could not be installed:', error);
         }
 
-        try {
-          ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-            name: 'conversation.composer.dock',
-            id: 'data-mask',
-            order: 20,
-          }, MaskDockEntry));
-        } catch (error) {
-          console.warn('[data-mask] composer dock entry could not be registered:', error);
-        }
-
-        // Root-scoped fallback surface: the dock above is session-scoped, so the
-        // masked-paste notice would be invisible on the start screen.
+        // Root-scoped notice: a dock-scoped one would be invisible on the start
+        // screen, where no Session (and so no dock) exists yet.
         try {
           ctx.slots.inject('shell.overlay', () => ctx.slots.register({
             name: 'shell.overlay',
             id: 'data-mask-notice',
             order: 40,
-          }, MaskOverlayEntry));
+          }, MaskNoticeSurface));
         } catch (error) {
-          console.warn('[data-mask] overlay entry could not be registered:', error);
+          console.warn('[data-mask] notice surface could not be registered:', error);
+        }
+
+        // The plugin's settings are a section of the shell's own Settings panel,
+        // reached from the sidebar foot — not a floating panel of its own design.
+        try {
+          ctx.slots.inject('settings.section', () => ctx.slots.register({
+            name: 'settings.section',
+            id: 'data-mask',
+            order: 40,
+            // A thunk is re-read on every projection, so the nav row follows the
+            // active language without re-registering.
+            label: () => t('nav.label'),
+          }, SettingsPage));
+        } catch (error) {
+          console.warn('[data-mask] settings section could not be registered:', error);
         }
       },
     };
