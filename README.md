@@ -84,7 +84,8 @@ node scripts/check-web-boot.mjs     "http://127.0.0.1:3080/?token=..."
 node scripts/check-web-e2e.mjs      "http://127.0.0.1:3080/?token=..."
 node scripts/check-web-settings.mjs "http://127.0.0.1:3080/?token=..."
 
-# 截图（视觉走查用，默认写到 ./screenshots）
+# 截图（仅本地视觉走查用；screenshots/ 已加入 .gitignore，不要提交）
+# 截图会拍到运行中的 GUI，包含你自己的会话列表与对话标题，提交等于泄露。
 node scripts/shoot-settings.mjs "http://127.0.0.1:3080/?token=..."
 ```
 
@@ -100,11 +101,12 @@ scripts/repro-client.mjs         在 Node 里模拟浏览器模块表，复现�
 scripts/check-web-boot.mjs       无头 Chrome：抓真实控制台输出，确认启动门通过
 scripts/check-web-e2e.mjs        无头 Chrome：验证粘贴脱敏、按住查看、撤销
 scripts/check-web-settings.mjs   无头 Chrome：验证设置页渲染/切换持久化/开关生效
-scripts/check-notice.mjs         无头 Chrome：验证提示条位置/按住查看/会话归属
+scripts/check-notice.mjs         无头 Chrome：验证提示条位置/按住查看/会话归属（切走与切回）
+scripts/check-notice-align.mjs   无头 Chrome：验证提示条与输入框左右对齐等宽、真实指针连按三次
 scripts/check-reveal-cycle.mjs   无头 Chrome：验证提示条宽度=输入框宽度、连续多次按住查看
 scripts/check-page.mjs           无头 Chrome：页面现状排查（选择器找不到时用）
 scripts/check-composer-dom.mjs   无头 Chrome：打印输入框区域的 DOM 与 data-* 标记
-scripts/shoot-settings.mjs       无头 Chrome：截图到 screenshots/
+scripts/shoot-settings.mjs       无头 Chrome：截图到 screenshots/（仅本地，勿提交）
 test/                  node:test 用例（引擎行为 + 产物同步 + 清单一致性 + 启动安全约束）
 ```
 

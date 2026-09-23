@@ -810,6 +810,9 @@ window.__ModuleLoader__.load({
           hits: result.hits,
           total: result.total,
           editor: editorBefore,
+          // Structural identity of this composer, so the notice can follow the
+          // conversation back when the editor node is re-mounted.
+          fingerprint: editorBefore === null ? null : composerFingerprint(editorBefore),
           applied: null,
           swapped: false,
           draftState: 'unknown',
@@ -840,12 +843,38 @@ window.__ModuleLoader__.load({
     let pendingProbe = null;
 
     /**
-     * Whether the notice still belongs to the conversation on screen.
+     * A structural fingerprint of the composer an editor belongs to.
      *
      * The shell exposes no session id in the DOM, so ownership is judged by the
-     * recorded editor itself: switching conversations unmounts the composer the
-     * paste happened in, which is exactly the signal needed. An editor that is
-     * still mounted (the start screen) keeps its notice.
+     * composer's own structure: the class names of the field and its nearest
+     * composer ancestors. Switching conversations re-mounts the composer with a
+     * DIFFERENT structure, while a re-render of the same conversation keeps the
+     * same one — so the notice can follow the conversation back.
+     *
+     * @param element - the editable field.
+     * @returns the fingerprint, or null when it cannot be read.
+     */
+    function composerFingerprint(element) {
+      try {
+        const names = [element.className];
+        for (let node = element.parentElement; node !== null && node !== document.body; node = node.parentElement) {
+          names.push(node.className);
+          if (node.hasAttribute('data-composer-card')) break;
+        }
+        return names.join('>');
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Whether the notice still belongs to the conversation on screen.
+     *
+     * The recorded editor can be unmounted by a re-render of the SAME
+     * conversation, so a missing node is not by itself proof that the user left:
+     * the current composer's fingerprint decides. A composer whose fingerprint
+     * matches means the notice belongs here (and comes back when the user
+     * returns); one that does not means another conversation is on screen.
      *
      * @param record - the masked-paste record.
      * @returns whether the notice should be shown.
@@ -853,7 +882,18 @@ window.__ModuleLoader__.load({
     function recordBelongsToView(record) {
       const recorded = record?.editor;
       if (!(recorded instanceof HTMLElement)) return true;
-      return recorded.isConnected;
+      if (recorded.isConnected) return true;
+      const fingerprint = record.fingerprint;
+      if (typeof fingerprint !== 'string' || fingerprint === '') return false;
+      try {
+        const fields = document.querySelectorAll('[data-composer-input]');
+        for (const field of fields) {
+          if (composerFingerprint(field) === fingerprint) return true;
+        }
+      } catch {
+        return false;
+      }
+      return false;
     }
 
     /**
@@ -892,7 +932,11 @@ window.__ModuleLoader__.load({
           ?? document.querySelector('[contenteditable=""],[contenteditable="true"]');
         if (field === null) return { bottom: '18px' };
         const rect = composerCardOf(field).getBoundingClientRect();
+        // Anchored by the card's own edges, NOT by centring the overlay in the
+        // viewport: the composer column sits beside the sidebar, so a centred
+        // overlay is offset from the card by half the sidebar's width.
         return {
+          left: `${String(Math.round(rect.left))}px`,
           bottom: `${String(Math.round(Math.max(12, window.innerHeight - rect.top + 8)))}px`,
           width: `${String(Math.round(rect.width))}px`,
         };
@@ -1420,32 +1464,27 @@ window.__ModuleLoader__.load({
      * Hold-to-reveal, owned by the surface so the composer write and the record
      * stay in step.
      *
-     * The state is DERIVED from the draft every time rather than remembered: a
-     * hold/release pair can fire faster than React re-renders, so a cached "we are
-     * revealing" flag is stale on the next press and every later press would be
-     * skipped (which is exactly what happened). `swapDraft` is idempotent, so a
-     * repeated press is a no-op and a release always puts the mask back.
+     * Both the request and the state are derived from the draft every time
+     * (`probeDraft`) instead of a remembered flag: a cached flag goes stale on a
+     * fast press/release and then sticks, which is what made the reveal work once
+     * and then silently disable itself and the undo. `swapDraft` is idempotent, so
+     * a repeated report is a no-op and a release always puts the mask back.
      *
      * @param record - the masked-paste record.
      * @param reveal - whether the composer should show the original.
      */
     function revealDraft(record, reveal) {
-      // The button's own handler AND the document-level release listener can
-      // report the same transition; without this guard the write would run twice
-      // and the second pass would append the restored text instead of replacing it.
-      if (record.swapped === reveal && record.draftState !== 'diverged') return;
+      const live = probeDraft(record);
+      // Already in the requested shape: nothing to write.
+      if (reveal ? live === 'swapped' : live === 'masked') return;
       const swapped = swapDraft(record, reveal);
       const draftState = swapped ? (reveal ? 'swapped' : 'masked') : 'diverged';
-      if (!swapped) {
-        store.setRecord({ ...record, swapped: false, draftState });
-        return;
-      }
       store.setRecord({
         ...record,
-        swapped: reveal,
+        swapped: swapped ? reveal : false,
         draftState,
         // A successful swap also proves the masked text did reach the composer.
-        applied: true,
+        applied: swapped ? true : record.applied,
       });
     }
 
@@ -1462,8 +1501,12 @@ window.__ModuleLoader__.load({
       const [copied, setCopied] = useState(false);
       const [expiresIn, setExpiresIn] = useState(() => Math.max(0, store.getExpiresAt() - Date.now()));
 
-      // Reveal state comes from the draft, never from a cached flag.
-      const revealing = record.swapped === true && record.draftState === 'swapped';
+      // Every decision below is taken from what the composer ACTUALLY holds right
+      // now (`probeDraft`), not from a cached flag: a cached flag goes stale on a
+      // fast press/release and then sticks, which is what made the reveal work
+      // once and then disable both the reveal and the undo.
+      const live = probeDraft(record);
+      const revealing = live === 'swapped';
       useEffect(() => {
         // A held reveal is an active read: no countdown churn while it is held.
         if (record.undone || revealing) return undefined;
@@ -1474,9 +1517,21 @@ window.__ModuleLoader__.load({
       const preview = record.hits.map((hit) => `${hit.label}×${hit.count}`).join('、');
       // `applied === null` means the paste verdict has not settled yet.
       const unwritten = record.applied === false;
-      const diverged = record.draftState === 'diverged' && !unwritten;
+      const diverged = live === 'diverged' && !unwritten;
 
+      /**
+       * Put the original back.
+       *
+       * A held reveal already left the original in place, so this only has to
+       * settle the record — refusing here would be wrong while the draft is
+       * demonstrably the text we wrote.
+       */
       const undo = () => {
+        if (live === 'original' || live === 'swapped') {
+          setFailure(false);
+          onUndone();
+          return;
+        }
         if (restoreOriginal(record)) {
           setFailure(false);
           onUndone();
@@ -1544,12 +1599,12 @@ window.__ModuleLoader__.load({
                 title: t('notice.viewHint'),
                 // Press-and-hold, not click: the composer carries the original
                 // only between pointerdown and release, like a revealed password.
-                // No release handler and no pointer capture here: the release is
-                // owned by the document listener above (capture swallowed every
-                // press after the first, and a second release handler appended the
-                // restored text instead of replacing it).
+                // No release handler, no pointer capture and no pointerleave here:
+                // the release is owned by the document listener above. Capture
+                // swallowed every press after the first, `pointerleave` fires while
+                // moving TOWARD the button (cancelling the hold before it starts),
+                // and a second release handler appended the restored text.
                 onPointerDown: () => setRevealed(true),
-                onPointerLeave: () => setRevealed(false),
                 onKeyDown: (event) => {
                   if (event.repeat) return;
                   setRevealed(true);
@@ -1592,6 +1647,11 @@ window.__ModuleLoader__.load({
           const placement = noticePlacement();
           element.style.bottom = placement.bottom;
           if (placement.width !== undefined) element.style.width = placement.width;
+          if (placement.left !== undefined) {
+            // Left is anchored to the card, so the centring transform is dropped.
+            element.style.left = placement.left;
+            element.style.transform = 'none';
+          }
         };
         place();
         let observer = null;
@@ -1639,7 +1699,7 @@ window.__ModuleLoader__.load({
         const timer = window.setInterval(() => {
           store.sweep();
           setTick((value) => value + 1);
-        }, 5000);
+        }, 1000);
         return () => window.clearInterval(timer);
       }, []);
 

@@ -97,14 +97,19 @@ test('the hold-to-reveal hold has exactly one release path', () => {
   // The button used to carry its own release handler AND rely on the document
   // listener; one pointerup then ran the restore twice, and the second pass
   // appended the text instead of replacing it. The document listener owns the
-  // release, and the write is guarded so a repeated report is a no-op.
+  // release, the pointer-leave shortcut is gone (it fired on the way to the
+  // button and cancelled the hold), and every decision re-reads the draft.
   const notice = client.slice(client.indexOf('function MaskNotice('));
   assert.match(notice, /document\.addEventListener\('pointerup', release, true\)/);
   assert.doesNotMatch(notice, /onPointerUp:/);
   assert.doesNotMatch(notice, /onPointerCancel:/);
+  assert.doesNotMatch(notice, /onPointerLeave:/);
   // Pointer capture swallowed every press after the first one.
   assert.doesNotMatch(client, /setPointerCapture/);
-  assert.match(client, /if \(record\.swapped === reveal && record\.draftState !== 'diverged'\) return;/);
+  // The reveal and the undo both judge from the live draft, not a cached flag.
+  assert.match(notice, /const live = probeDraft\(record\);/);
+  assert.match(notice, /if \(live === 'original' \|\| live === 'swapped'\)/);
+  assert.match(client, /if \(reveal \? live === 'swapped' : live === 'masked'\) return;/);
 });
 
 test('the notice matches the composer card width', () => {

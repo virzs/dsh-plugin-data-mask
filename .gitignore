@@ -2,3 +2,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Screenshots are produced by scripts/shoot-settings.mjs for local visual review
+# only. They show the live GUI, which includes the owner's own session list and
+# conversation titles, so they must never be committed: an earlier revision did,
+# and the images had to be purged from the public history.
+screenshots/
