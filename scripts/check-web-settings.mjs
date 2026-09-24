@@ -202,20 +202,37 @@ await send('Page.navigate', { url: target }, sessionId);
 await sleep(16000);
 
 const back = await evaluate(`(async () => {
-  const editor = document.querySelector('[contenteditable=""],[contenteditable="true"]');
-  if (editor === null) return 'no editor after reload';
-  const clean = editor.textContent;
-  editor.focus();
-  const focused = document.activeElement === editor;
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const editor = () => document.querySelector('[contenteditable=""],[contenteditable="true"]');
+  let target = editor();
+  if (target === null) return 'no editor after reload';
+  // Empty the draft first: a draft that still holds the previous (unmasked) paste
+  // is a draft the notice must NOT describe — it no longer matches what was
+  // written, which is exactly the deletion case the plugin now detects.
+  target.focus();
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  document.dispatchEvent(new Event('selectionchange'));
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8, bubbles: true, cancelable: true }));
+  target.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true }));
+  await wait(1200);
+  const emptied = editor().textContent;
+
+  target = editor();
+  target.focus();
+  const focused = document.activeElement === target;
   const data = new DataTransfer();
   data.setData('text/plain', '张三 13812345678 收');
-  editor.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
-  await new Promise((resolve) => setTimeout(resolve, 900));
+  target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  await wait(1000);
   const notice = document.querySelector('.dsh-data-mask-notice');
   return {
-    clean,
+    emptied,
     focused,
-    draft: editor.textContent,
+    draft: editor().textContent,
     notice: notice?.textContent ?? null,
     buttons: notice === null ? [] : [...notice.querySelectorAll('button')].map((b) => b.textContent),
     chip: document.querySelectorAll('.dsh-data-mask-chip').length,
@@ -224,9 +241,8 @@ const back = await evaluate(`(async () => {
 })()`);
 if (typeof back === 'object') {
   record('page reloads cleanly with the plugin (no boot failure)', back.bootFailed === false);
-  // The composer restores the persisted draft, so the pasted text is appended;
-  // the masked run is what matters.
-  record('masking masked the second paste', back.draft.includes('张三 [手机号/固话] 收') ? `"${back.draft}"` : false);
+  record('draft was emptied before the paste', back.emptied === '' ? `"${String(back.emptied)}"` : false);
+  record('masking masked the clean paste', back.draft === '张三 [手机号/固话] 收' ? `"${back.draft}"` : false);
   record('notice appears with reveal + undo', back.buttons.some((b) => b.includes('查看原文')) && back.buttons.some((b) => b.includes('撤销')) ? `"${String(back.notice)}"` : false);
   record('no chip is rendered any more', back.chip === 0);
 } else {

@@ -13,7 +13,7 @@
  * Usage: node scripts/check-session-flow.mjs "http://127.0.0.1:3098/?token=..."
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,8 +77,16 @@ async function evaluate(expression) {
   return result.result.value;
 }
 async function shoot(name) {
-  const shot = await send('Page.captureScreenshot', { format: 'png' }, sessionId);
-  writeFileSync(join(shotDir, name + '.png'), Buffer.from(shot.data, 'base64'));
+  // Screenshots are a local visual aid, never a deliverable: the directory is
+  // gitignored (the images capture the owner's own session list), so it may not
+  // exist and shooting must not fail the check.
+  try {
+    mkdirSync(shotDir, { recursive: true });
+    const shot = await send('Page.captureScreenshot', { format: 'png' }, sessionId);
+    writeFileSync(join(shotDir, name + '.png'), Buffer.from(shot.data, 'base64'));
+  } catch (error) {
+    console.log(`(screenshot ${name} skipped: ${String(error.message)})`);
+  }
 }
 
 // Open a real Session from the sidebar: the composer there is a different subtree

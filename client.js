@@ -907,6 +907,28 @@ window.__ModuleLoader__.load({
     let pendingProbe = null;
 
     /**
+     * Whether the notice still describes anything.
+     *
+     * Both cases read the composer LIVE rather than trusting a state flag, because
+     * `draftState: 'diverged'` also covers the plugin's own reveal: a hold writes
+     * the original, which IS "the draft changed" but is emphatically NOT the user
+     * discarding the notice.
+     *
+     * @param record - the masked-paste record.
+     * @returns `true` when the composer no longer holds anything this notice is
+     * about (deleted, or replaced by text the plugin never wrote).
+     */
+    function recordStillApplies(record) {
+      // An undone record keeps its confirmation whatever the composer holds.
+      if (record?.undone === true) return true;
+      const editor = liveEditor(record);
+      if (editor === null) return false;
+      const current = editorText(editor);
+      if (current === '') return false;
+      return current === record.draft || current === record.original;
+    }
+
+    /**
      * The Session the sidebar currently has selected.
      *
      * Switching conversations reuses the composer node — the composer's whole
@@ -1785,6 +1807,16 @@ window.__ModuleLoader__.load({
       // Identity, not connectivity: the composer survives a conversation switch,
       // so ownership comes from the Session the paste happened in.
       if (!recordBelongsToView(record)) return null;
+      // Nothing left to describe: the user deleted the draft, or replaced it.
+      if (!recordStillApplies(record)) {
+        if (record.undone !== true) {
+          // Drop the record instead of hiding it forever: nothing left to undo.
+          window.setTimeout(() => {
+            if (store.getRecord() === record) store.setRecord(null);
+          }, 0);
+        }
+        return null;
+      }
 
       return h(
         'div',

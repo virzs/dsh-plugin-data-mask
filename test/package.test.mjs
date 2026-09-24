@@ -151,6 +151,20 @@ test('the Client bundle registers exactly the manifest package id', () => {
   assert.match(patch, /name: '@local\/dsh-plugin-data-mask'/);
 });
 
+test('the notice clears when its draft is deleted', () => {
+  // The report: deleting the masked message left the notice behind. The composer
+  // is read LIVE for this — a state flag cannot decide it, because
+  // `draftState: 'diverged'` also covers the plugin's own reveal (a hold writes
+  // the original, which IS a changed draft but is not the user discarding it).
+  assert.match(client, /function recordStillApplies\(record\)/);
+  assert.match(client, /if \(current === ''\) return false;/);
+  assert.match(client, /return current === record\.draft \|\| current === record\.original;/);
+  // An undone record keeps its confirmation whatever the composer holds.
+  assert.match(client, /if \(record\?\.undone === true\) return true;/);
+  // And the record is dropped, not merely hidden, so nothing stale can come back.
+  assert.match(client, /if \(store\.getRecord\(\) === record\) store\.setRecord\(null\);/);
+});
+
 test('the plugin injects only services it cannot live without', () => {
   // A required-but-missing service parks the fiber, and the boot gate then
   // refuses to start the GUI — so `locale` is read through `ctx.get`, which
